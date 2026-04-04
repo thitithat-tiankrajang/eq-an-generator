@@ -1,0 +1,201 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-chart-1: hsl(var(--chart-1));
+  --color-chart-2: hsl(var(--chart-2));
+  --color-chart-3: hsl(var(--chart-3));
+  --color-chart-4: hsl(var(--chart-4));
+  --color-chart-5: hsl(var(--chart-5));
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+@keyframes accordion-down {
+  from { height: 0; }
+  to { height: var(--radix-accordion-content-height); }
+}
+
+@keyframes accordion-up {
+  from { height: var(--radix-accordion-content-height); }
+  to { height: 0; }
+}
+
+@layer base {
+  :root {
+    /* Background: warm cream — สบายตา ไม่แข็งกระด้างเหมือน pure white */
+    --background: 42 28% 96%;
+    --foreground: 28 22% 11%;
+
+    /* Card: ขาวอุ่น แยกออกจาก background อย่างนุ่มนวล */
+    --card: 40 35% 99%;
+    --card-foreground: 28 22% 11%;
+
+    --popover: 40 35% 99%;
+    --popover-foreground: 28 22% 11%;
+
+    /* Primary: Gold ลึก — หรู ไม่โจ่งแจ้ง */
+    --primary: 43 65% 40%;
+    --primary-foreground: 42 25% 97%;
+
+    /* Secondary: Sage green อ่อน — สงบ สะอาด */
+    --secondary: 148 18% 89%;
+    --secondary-foreground: 148 32% 24%;
+
+    /* Muted: warm gray อุ่น */
+    --muted: 40 16% 92%;
+    --muted-foreground: 35 12% 46%;
+
+    /* Accent: Amber/golden light — ใช้ highlight, badge, hover bg */
+    --accent: 44 55% 89%;
+    --accent-foreground: 36 68% 28%;
+
+    --destructive: 0 68% 50%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Border & Input: golden-tinted warm */
+    --border: 40 24% 84%;
+    --input: 40 24% 84%;
+
+    /* Ring: gold focus ring */
+    --ring: 43 65% 40%;
+
+    /* Charts: gold → sage → amber → light gold → teal */
+    --chart-1: 43 65% 40%;
+    --chart-2: 148 28% 42%;
+    --chart-3: 38 78% 52%;
+    --chart-4: 46 52% 62%;
+    --chart-5: 155 26% 44%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar: slightly warmer/darker cream */
+    --sidebar-background: 40 22% 93%;
+    --sidebar-foreground: 28 18% 20%;
+    --sidebar-primary: 43 65% 40%;
+    --sidebar-primary-foreground: 42 25% 97%;
+    --sidebar-accent: 44 48% 87%;
+    --sidebar-accent-foreground: 36 65% 28%;
+    --sidebar-border: 40 20% 85%;
+    --sidebar-ring: 43 65% 40%;
+  }
+
+  .dark {
+    /* Dark mode: warm dark brown — ไม่ดำล้วน ให้ความรู้สึก premium */
+    --background: 28 14% 8%;
+    --foreground: 42 20% 91%;
+
+    --card: 28 12% 11%;
+    --card-foreground: 42 20% 91%;
+
+    --popover: 28 12% 11%;
+    --popover-foreground: 42 20% 91%;
+
+    /* Gold สว่างขึ้นนิดในโหมดมืด */
+    --primary: 43 68% 52%;
+    --primary-foreground: 28 16% 8%;
+
+    --secondary: 148 16% 18%;
+    --secondary-foreground: 148 22% 70%;
+
+    --muted: 28 10% 16%;
+    --muted-foreground: 35 10% 60%;
+
+    --accent: 38 42% 20%;
+    --accent-foreground: 43 62% 68%;
+
+    --destructive: 0 52% 38%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 28 10% 20%;
+    --input: 28 10% 20%;
+    --ring: 43 68% 52%;
+
+    --chart-1: 43 68% 52%;
+    --chart-2: 148 28% 46%;
+    --chart-3: 38 72% 54%;
+    --chart-4: 46 48% 60%;
+    --chart-5: 155 24% 44%;
+
+    --sidebar-background: 28 14% 10%;
+    --sidebar-foreground: 40 16% 80%;
+    --sidebar-primary: 43 68% 52%;
+    --sidebar-primary-foreground: 28 16% 8%;
+    --sidebar-accent: 36 28% 18%;
+    --sidebar-accent-foreground: 43 58% 66%;
+    --sidebar-border: 28 10% 18%;
+    --sidebar-ring: 43 68% 52%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ─── Interactive state helpers ─────────────────────────────────────────────
+   Hover/active ที่ make sense: primary button จะเข้มขึ้น, ghost/outline จะ
+   แสดง gold tint, link จะ underline พร้อม gold color
+   Component-level transitions ทำผ่าน Tailwind classes ใน components แต่
+   เพิ่ม transition timing global เพื่อให้ smooth ทั้งแอป
+──────────────────────────────────────────────────────────────────────────── */
+@layer base {
+  button,
+  [role="button"],
+  a,
+  input,
+  select,
+  textarea {
+    transition-property: color, background-color, border-color, box-shadow, opacity, transform;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* Focus visible: gold ring สวยงาม */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* Selection: highlight สีทอง */
+  ::selection {
+    background-color: hsl(43 65% 40% / 0.18);
+    color: hsl(var(--foreground));
+  }
+}

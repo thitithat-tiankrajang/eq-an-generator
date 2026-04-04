@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A-Math Solution</title>
+  <link rel="stylesheet" href="navbar.css">
+  <link rel="stylesheet" href="styles-ver-1.0.1.css">
+</head>
+
+<body>
+  <nav class="app-nav">
+    <a class="app-nav__brand" href="index.html">A-Math Solution</a>
+    <div class="app-nav__versions">
+      <a class="app-nav__link" href="index.html">Select Version</a>
+      <a class="app-nav__link" href="index-ver-1.0.0.html">v1.0.0</a>
+      <a class="app-nav__link is-active" href="index-ver-1.0.1.html">v1.0.1</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="mode">
+      <button id="mode1" class="active">Bingo 8</button>
+      <button id="mode2">Bingo Fix Position</button>
+    </div>
+
+    <!-- Rack -->
+    <div class="show-pawn-input" id="topDisplay" onclick="selectTopTarget()"></div>
+
+    <!-- Min-tile filter -->
+    <div class="min-tile-row">
+      <label>Show solutions using at least</label>
+      <input type="number" id="minTileInput" min="1" max="9" value="1">
+      <label>tile(s)</label>
+      <span class="hint">(1 = show all)</span>
+    </div>
+
+    <!-- Mode 2 panel -->
+    <div id="mode2Panel" style="display:none;">
+      <div class="mode2-hint">
+        Define the known tile order, alternating with empty slots.
+      </div>
+      <div class="segment-builder" id="segmentBuilder"></div>
+      <div class="seg-controls">
+        <button class="seg-btn add-seg" onclick="addSegment()">+ Add Group</button>
+        <button class="seg-btn remove-seg" onclick="removeSegment()">&#8722; Remove Last</button>
+      </div>
+      <div class="seq-preview-label">Click an empty slot to cycle bonus: p&times;1 &rarr; p&times;2 &rarr; p&times;3 &rarr; e&times;2 &rarr; e&times;3</div>
+      <div class="seq-preview-wrap" id="seqPreview"></div>
+    </div>
+
+    <!-- Pawn pad -->
+    <div class="pawn" id="pawnPad"></div>
+
+    <div class="control">
+      <input type="button" value="Back">
+      <input type="button" value="Clear">
+      <input type="button" value="Submit">
+    </div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-card">
+      <div class="loading-title">Computing</div>
+      <div class="loading-spinner"></div>
+      <div class="loading-pct" id="loadingPct">0%</div>
+      <div class="loading-bar-track">
+        <div class="loading-bar-fill" id="loadingBarFill"></div>
+      </div>
+      <div class="loading-detail" id="loadingDetail">Preparing...</div>
+    </div>
+  </div>
+
+  <div class="solutions-container" id="solutionsContainer"></div>
+  <script src="script-ver-1.0.1.js"></script>
+</body>
+
+</html>
