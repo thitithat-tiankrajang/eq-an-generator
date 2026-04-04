@@ -31,7 +31,7 @@ export default function Login() {
           <div className="w-14 h-14 bg-linear-to-br from-yellow-500 to-green-700 rounded-xl flex items-center justify-center text-white text-2xl font-semibold mx-auto mb-4 shadow-md shadow-white-200">
             DS
           </div>
-          <h1 className="text-2xl font-semibold text-stone-900">DASC EQ SECVICE</h1>
+          <h1 className="text-2xl font-semibold text-stone-900">DAEQ Anagram Generator</h1>
           <p className="text-stone-400 text-sm mt-1">Equation Anagram Training Platform</p>
         </div>
 

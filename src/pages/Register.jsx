@@ -142,7 +142,7 @@ export default function Register() {
 
         <div className="mt-5 flex items-center justify-center gap-2 text-sm text-stone-500">
           <ArrowLeft className="w-3.5 h-3.5" />
-          <Link to="/Login" className="text-green-700 font-medium hover:underline">
+          <Link to="/login" className="text-green-700 font-medium hover:underline">
             Back to Login
           </Link>
         </div>

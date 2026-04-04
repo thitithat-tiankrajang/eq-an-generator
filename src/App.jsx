@@ -40,9 +40,9 @@ const AuthenticatedApp = () => {
     } else if (authError.type === 'auth_required') {
       return (
         <Routes>
-          <Route path="/Login" element={<Login />} />
+          <Route path="/login" element={<Login />} />
           <Route path="/Register" element={<Register />} />
-          <Route path="*" element={<Navigate to="/Login" replace />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       );
     }
@@ -56,7 +56,7 @@ const AuthenticatedApp = () => {
           <MainPage />
         </LayoutWrapper>
       } />
-      <Route path="/Login" element={<Navigate to="/" replace />} />
+      <Route path="/login" element={<Navigate to="/" replace />} />
       {/* Full-screen assignment player — no layout wrapper */}
       <Route path="/play/:assignmentId" element={<PlayAssignment />} />
       {/* Assignment detail pages — with layout */}

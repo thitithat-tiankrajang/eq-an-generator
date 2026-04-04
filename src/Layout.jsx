@@ -91,7 +91,7 @@ export default function Layout({ children, currentPageName }) {
               </div>
             ) : (
               <Link
-                to="/Login"
+                to="/login"
                 className="bg-blue-600 text-white text-sm font-medium px-4 py-1.5 rounded-lg hover:bg-blue-700 transition-colors"
               >
                 Sign In
@@ -139,7 +139,7 @@ export default function Layout({ children, currentPageName }) {
 
       {/* Footer */}
       <footer className="border-t border-slate-200 bg-white text-center py-3 text-xs text-slate-400">
-        DSEQ Anagram Pro — Institutional Equation Anagram Training Platform © 2026
+        DAEQ Anagram Pro — Institutional Equation Anagram Training Platform © 2026
       </footer>
     </div>
   );
