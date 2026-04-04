@@ -14,7 +14,7 @@ import { Progress } from "@/components/ui/progress";
 
 const STATUS_CFG = {
   todo:        { label: 'Not Started', color: 'text-stone-500',   bg: 'bg-stone-100',   icon: Circle },
-  inprogress:  { label: 'In Progress', color: 'text-amber-700',   bg: 'bg-amber-100',   icon: Zap },
+  inprogress:  { label: 'In Progress', color: 'text-pink-700',   bg: 'bg-pink-100',   icon: Zap },
   complete:    { label: 'Complete',    color: 'text-emerald-700', bg: 'bg-emerald-100', icon: CheckCircle2 },
   done:        { label: 'Reviewed',   color: 'text-sky-700',     bg: 'bg-sky-100',     icon: Award },
 };
@@ -44,42 +44,67 @@ export default function Dashboard() {
   const pending  = assignments.filter(a => a.studentProgress?.status === 'todo');
   const done     = assignments.filter(a => ['complete','done'].includes(a.studentProgress?.status));
 
-  const roleConfig = {
-    admin:   { color: 'bg-amber-100 text-amber-700 border border-amber-200',   label: 'Administrator' },
-    student: { color: 'bg-emerald-100 text-emerald-700 border border-emerald-200', label: 'Student' },
-  };
-  const rc = roleConfig[user?.role] || { color: 'bg-stone-100 text-stone-600', label: 'User' };
-
   return (
-    <div className="min-h-screen bg-linear-to-br from-stone-50 via-amber-50/30 to-stone-100 p-4 md:p-8">
+    <div className="min-h-screen bg-linear-to-br from-stone-50 via-pink-50/30 to-stone-100 p-4 md:p-8">
       <div className="max-w-7xl mx-auto space-y-6">
 
-        {/* ── Hero Header ─────────────────────────────────────────────────── */}
-        <div className="relative overflow-hidden rounded-2xl bg-linear-to-br from-amber-700 via-amber-600 to-yellow-500 p-6 md:p-8 text-white shadow-xl shadow-amber-200/50">
-          <div className="absolute inset-0 opacity-10"
-            style={{ backgroundImage: 'radial-gradient(circle at 20% 50%, white 1px, transparent 1px), radial-gradient(circle at 80% 20%, white 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
+      <div className="relative overflow-hidden rounded-2xl 
+        bg-gradient-to-br 
+        from-green-900 
+        via-lime-700 
+        to-yellow-400 
+        p-6 md:p-8 text-white 
+        shadow-2xl shadow-emerald-300/40">
+
+        {/* subtle pattern */}
+        <div
+          className="absolute inset-0 opacity-[0.08]"
+          style={{
+            backgroundImage:
+              "radial-gradient(circle at 20% 50%, white 1px, transparent 1px), radial-gradient(circle at 80% 20%, white 1px, transparent 1px)",
+            backgroundSize: "42px 42px",
+          }}
+        />
+
+        {/* glow overlay */}
+        <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/10 to-white/20 mix-blend-soft-light" />
+
           <div className="relative flex items-start justify-between gap-4">
             <div>
-              <p className="text-amber-200 text-xs font-mono tracking-widest uppercase mb-1">Welcome back</p>
+              <p className="text-emerald-200 text-xs font-mono tracking-widest uppercase mb-1">
+                Welcome back
+              </p>
+
               <h1 className="text-2xl md:text-3xl font-bold leading-tight">
-                {user?.full_name || `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim() || user?.email || 'Player'}
+                {user?.full_name ||
+                  `${user?.firstName ?? ""} ${user?.lastName ?? ""}`.trim() ||
+                  user?.email ||
+                  "Player"}
               </h1>
-              <p className="text-amber-100/80 text-sm mt-1">Ready to solve some equations?</p>
+
+              <p className="text-white/80 text-sm mt-1">
+                Ready to solve some equations?
+              </p>
             </div>
-            <Badge className={`${rc.color} text-xs px-3 py-1.5 shrink-0 font-medium`}>{rc.label}</Badge>
           </div>
 
-          {/* Student quick stats inline */}
-          {user?.role === 'student' && (
+          {/* Student quick stats */}
+          {user?.role === "student" && (
             <div className="relative mt-5 grid grid-cols-3 gap-3">
               {[
-                { label: 'Active',   value: active.length,  icon: Zap },
-                { label: 'Pending',  value: pending.length, icon: Clock },
-                { label: 'Done',     value: done.length,    icon: CheckCircle2 },
-              ].map(s => (
-                <div key={s.label} className="bg-white/15 backdrop-blur-sm rounded-xl px-3 py-2.5 text-center">
-                  <p className="text-xl font-bold">{s.value}</p>
-                  <p className="text-amber-100/80 text-xs mt-0.5">{s.label}</p>
+                { label: "Active", value: active.length, icon: Zap },
+                { label: "Pending", value: pending.length, icon: Clock },
+                { label: "Done", value: done.length, icon: CheckCircle2 },
+              ].map((s) => (
+                <div
+                  key={s.label}
+                  className="bg-white/20 backdrop-blur-md border border-white/20 
+                  rounded-xl px-3 py-2.5 text-center shadow-inner shadow-white/10"
+                >
+                  <p className="text-xl font-bold text-white drop-shadow">
+                    {s.value}
+                  </p>
+                  <p className="text-white/70 text-xs mt-0.5">{s.label}</p>
                 </div>
               ))}
             </div>
@@ -95,7 +120,7 @@ export default function Dashboard() {
               icon={Play}
               title="Free Play"
               description="Competitive mode — set difficulty and race the clock."
-              gradient="from-amber-600 to-amber-800"
+              gradient="from-orange-600 to-orange-400"
               badge="Open to all"
               accent="amber"
             />
@@ -115,7 +140,7 @@ export default function Dashboard() {
               icon={Trophy}
               title="Leaderboard"
               description="See where you rank globally against other players."
-              gradient="from-yellow-500 to-amber-600"
+              gradient="from-yellow-600 to-yellow-400"
               badge="Rankings"
               accent="yellow"
             />
@@ -126,7 +151,7 @@ export default function Dashboard() {
                   icon={BarChart2}
                   title="Manage Assignments"
                   description="Create, configure and monitor student assignments."
-                  gradient="from-emerald-700 to-emerald-900"
+                  gradient="from-emerald-600 to-emerald-400"
                   badge="Admin"
                   accent="emerald"
                 />
@@ -135,7 +160,7 @@ export default function Dashboard() {
                   icon={Users}
                   title="User Management"
                   description="Approve or reject student registrations."
-                  gradient="from-yellow-600 to-yellow-800"
+                  gradient="from-blue-600 to-blue-400"
                   badge="Admin"
                   accent="yellow"
                 />
@@ -144,7 +169,7 @@ export default function Dashboard() {
                   icon={Target}
                   title="Admin Panel"
                   description="Generate puzzle PDFs and manage platform settings."
-                  gradient="from-green-600 to-green-800"
+                  gradient="from-red-600 to-red-400"
                   badge="Admin"
                   accent="green"
                 />
@@ -220,7 +245,7 @@ export default function Dashboard() {
                 {[
                   { label: 'Assignments', to: createPageUrl("TeacherDashboard"), color: 'bg-amber-100 text-amber-700 hover:bg-amber-200' },
                   { label: 'Students',    to: createPageUrl("UserManagement"),   color: 'bg-stone-100 text-stone-700 hover:bg-stone-200' },
-                  { label: 'PDF Generator', to: createPageUrl("AdminPanel"),     color: 'bg-green-100 text-green-700 hover:bg-green-200' },
+                  { label: 'PDF Generator', to: createPageUrl("AdminPanel"),     color: 'bg-violet-100 text-violet-700 hover:bg-violet-200' },
                 ].map(l => (
                   <Link key={l.label} to={l.to}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${l.color}`}>
