@@ -8,6 +8,10 @@ const __dirname = resolve(__filename, '..');
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'node',
+    alias: { '@': resolve(__dirname, './src') },
+  },
   server: {
     host: true,          // 🔥 เพิ่มอันนี้ (สำคัญสุด)
     port: 3000,

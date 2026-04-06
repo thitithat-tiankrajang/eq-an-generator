@@ -21,6 +21,7 @@ const NAV_ITEMS = [
 export default function Layout({ children, currentPageName }) {
   const { user, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [logoutConfirm, setLogoutConfirm] = useState(false);
 
   const role = user?.role || "student";
   const visibleNav = NAV_ITEMS.filter(n => n.roles.includes(role));
@@ -82,8 +83,8 @@ export default function Layout({ children, currentPageName }) {
                   </span>
                 </div>
                 <button
-                  onClick={logout}
-                  className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100"
+                  onClick={() => setLogoutConfirm(true)}
+                  className="text-slate-400 hover:text-red-500 p-1.5 rounded-lg hover:bg-red-50 transition-colors"
                   title="Logout"
                 >
                   <LogOut className="w-4 h-4" />
@@ -110,25 +111,61 @@ export default function Layout({ children, currentPageName }) {
       </header>
 
       {/* Mobile menu */}
-      {mobileOpen && (
-        <div className="md:hidden bg-white border-b border-slate-200 z-30 px-4 py-3 space-y-1">
-          {visibleNav.map(item => {
-            const active = currentPageName === item.page;
-            return (
-              <Link
-                key={item.page}
-                to={createPageUrl(item.page)}
-                onClick={() => setMobileOpen(false)}
-                className={cn(
-                  "flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium",
-                  active ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"
-                )}
+      <div
+        className={`md:hidden bg-white border-b border-slate-200 z-30 overflow-hidden transition-all duration-200 ease-out ${
+          mobileOpen ? 'max-h-screen opacity-100' : 'max-h-0 opacity-0 pointer-events-none'
+        }`}
+      >
+        {visibleNav.map(item => {
+          const active = currentPageName === item.page;
+          return (
+            <Link
+              key={item.page}
+              to={createPageUrl(item.page)}
+              onClick={() => setMobileOpen(false)}
+              className={cn(
+                "flex items-center gap-4 w-full px-6 py-5 text-base font-medium border-b border-slate-100 last:border-b-0 active:bg-slate-100 transition-colors select-none",
+                active ? "bg-green-50 text-green-700 font-semibold" : "text-slate-700"
+              )}
+            >
+              <item.icon className="w-5 h-5 shrink-0" />
+              {item.label}
+            </Link>
+          );
+        })}
+        <button
+          onClick={() => { setMobileOpen(false); setLogoutConfirm(true); }}
+          className="flex items-center gap-4 w-full px-6 py-5 text-base font-medium text-red-500 active:bg-red-50 transition-colors select-none"
+        >
+          <LogOut className="w-5 h-5 shrink-0" />
+          Logout
+        </button>
+      </div>
+
+      {/* Logout confirmation modal */}
+      {logoutConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-6" onClick={() => setLogoutConfirm(false)}>
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-xs p-6" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-100 mx-auto mb-4">
+              <LogOut className="w-6 h-6 text-red-500" />
+            </div>
+            <h2 className="text-center text-base font-bold text-slate-800 mb-1">ออกจากระบบ?</h2>
+            <p className="text-center text-sm text-slate-500 mb-6">ยืนยันการออกจากระบบ</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setLogoutConfirm(false)}
+                className="flex-1 py-3 rounded-xl border-2 border-slate-200 text-slate-600 text-sm font-semibold active:bg-slate-50 transition-colors"
               >
-                <item.icon className="w-4 h-4" />
-                {item.label}
-              </Link>
-            );
-          })}
+                ยกเลิก
+              </button>
+              <button
+                onClick={() => { setLogoutConfirm(false); logout(); }}
+                className="flex-1 py-3 rounded-xl bg-red-500 text-white text-sm font-semibold active:bg-red-600 transition-colors"
+              >
+                ออกจากระบบ
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

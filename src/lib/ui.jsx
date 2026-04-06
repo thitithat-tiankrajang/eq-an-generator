@@ -32,7 +32,7 @@ function getWildOptions(tile) {
 }
 
 // ── Unique ID ─────────────────────────────────────────────────────────────────
-let _uid = 0;
+let _uid = Date.now();
 const uid = () => ++_uid;
 
 // ── Score calculator ──────────────────────────────────────────────────────────
@@ -86,6 +86,14 @@ export default function App() {
   const [mode,         setMode]         = useState('cross');
   const [puzzleSets,   setPuzzleSets]   = useState(DEFAULT_SETS);
   const [timerEnabled, setTimerEnabled] = useState(false);
+
+  // ── Tile sets (fetched once for poolDef lookup in generate) ─────────────
+  const tileSetsCache = useRef([]);
+  useEffect(() => {
+    api.tileSets.list()
+      .then(res => { tileSetsCache.current = res.tileSets ?? res ?? []; })
+      .catch(() => {});
+  }, []);
 
   // ── Puzzle list state ─────────────────────────────────────────────────────
   const [puzzleList,   setPuzzleList]   = useState([]);  // array of generateBingo results
@@ -205,7 +213,10 @@ export default function App() {
       try {
         const results = [];
         for (const s of puzzleSets) {
-          const cfg = buildGeneratorConfig(mode, s.tileCount, s.advancedCfg ?? DEFAULT_ADV_CFG);
+          const poolDef = s.tileSetId
+            ? (tileSetsCache.current.find(ts => ts.id === s.tileSetId)?.tiles ?? null)
+            : null;
+          const cfg = buildGeneratorConfig(mode, s.tileCount, s.advancedCfg ?? DEFAULT_ADV_CFG, poolDef);
           for (let i = 0; i < s.count; i++) {
             results.push(generateBingo(cfg));
           }
@@ -549,17 +560,17 @@ export default function App() {
   const analysis   = currentState?.analysis ?? null;
 
   return (
-    <div className="min-h-screen bg-linear-to-br from-stone-50 via-amber-50/30 to-stone-50 pb-20">
+    <div className="min-h-screen bg-stone-200 pb-20">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
         @keyframes fadeUp  { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
         @keyframes slideUp { from { opacity:0; transform:translateY(40px); } to { opacity:1; transform:translateY(0); } }
-        .font-mono { font-family: "JetBrains Mono", "Fira Code", monospace; }
+        .font-mono { font-family: "JetBrains Mono", "Fira Code", monospace; letter-spacing: 0; }
       `}</style>
 
       <BingoHeader />
 
-      <div className="max-w-3xl mx-auto px-4 pt-7">
+      <div className="max-w-3xl mx-auto px-2 pt-2">
         <BingoConfig
           mode={mode} setMode={setMode}
           puzzleSets={puzzleSets} setPuzzleSets={setPuzzleSets}
@@ -574,7 +585,7 @@ export default function App() {
             <button
               onClick={() => navigateTo(currentIdx - 1)}
               disabled={currentIdx === 0}
-              className="px-3 py-1.5 rounded-lg border border-stone-200 font-mono text-[9px] text-stone-500 hover:border-stone-300 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 rounded-lg border border-stone-300 bg-white font-mono text-[10px] text-stone-600 hover:border-stone-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
             >
               ← PREV
             </button>
@@ -604,7 +615,7 @@ export default function App() {
             <button
               onClick={() => navigateTo(currentIdx + 1)}
               disabled={currentIdx === totalCount - 1}
-              className="px-3 py-1.5 rounded-lg border border-stone-200 font-mono text-[9px] text-stone-500 hover:border-stone-300 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              className="px-3 py-1.5 rounded-lg border border-stone-300 bg-white font-mono text-[10px] text-stone-600 hover:border-stone-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
             >
               NEXT →
             </button>
@@ -642,7 +653,7 @@ export default function App() {
 
             {/* Submit error message */}
             {submitResult && !submitResult.correct && (
-              <div className="mb-4 px-5 py-3 rounded-xl border border-red-200 bg-red-50 font-mono text-[11px] text-red-600 tracking-wide text-center">
+              <div className="mb-4 px-5 py-3 rounded-xl border border-red-300 bg-red-50 font-mono text-[12px] text-red-700 tracking-normal text-center font-bold">
                 {submitResult.message}
               </div>
             )}
@@ -681,8 +692,8 @@ export default function App() {
 
 
         {totalCount === 0 && !loading && !error && (
-          <div className="text-center py-20 text-stone-300 font-mono text-[10px] tracking-[0.3em] uppercase">
-            <div className="text-5xl mb-5 opacity-20 leading-none">⊞</div>
+          <div className="text-center py-20 text-stone-400 font-mono text-[11px] tracking-wide uppercase">
+            <div className="text-5xl mb-5 opacity-30 leading-none">⊞</div>
             Configure a set and press Generate
           </div>
         )}
@@ -787,20 +798,6 @@ function AnalysisPanel({ analysis, onClose }) {
         <MiniStat label="Max Score" value={perf.maxPossibleScore} />
       </div>
 
-      {/* Solutions list */}
-      <div className="text-[9px] font-mono text-stone-400 mb-2 tracking-widest uppercase">
-        All Solutions ({allSolutions.length})
-      </div>
-      <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
-        {allSolutions.slice(0, 50).map((s, i) => (
-          <div key={i} className="px-3 py-1.5 rounded-lg bg-stone-50 border border-stone-100 font-mono text-[10px] text-stone-600 tracking-widest">
-            {s.eq}
-          </div>
-        ))}
-        {allSolutions.length > 50 && (
-          <div className="text-center text-stone-300 font-mono text-[8px]">+{allSolutions.length - 50} more</div>
-        )}
-      </div>
     </div>
   );
 }

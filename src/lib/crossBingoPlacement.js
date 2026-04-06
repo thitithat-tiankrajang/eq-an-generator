@@ -369,6 +369,21 @@ export function selectLockPositions(totalTile, lockCount, placement) {
     else if (p > 0) eligible.push({ i, score: p });
   }
 
+  mustLock.sort((a, b) => a - b);
+
+  const safeMustLock = [];
+  for (const pos of mustLock) {
+    if (safeMustLock.every(p => Math.abs(p - pos) > 1)) {
+      safeMustLock.push(pos);
+    } else {
+      console.warn(`[selectLockPositions] removed adjacent mustLock at ${pos}`);
+    }
+  }
+
+  // ใช้ตัวที่ clean แล้วแทน
+  mustLock.length = 0;
+  mustLock.push(...safeMustLock);
+
   console.log(
     `[selectLockPositions] totalTile=${totalTile} lockCount=${lockCount}`,
     `| mustLock=[${mustLock.join(',')}]`,
@@ -389,11 +404,16 @@ export function selectLockPositions(totalTile, lockCount, placement) {
   const chosen  = [...mustLock];
   const blocked = new Set();
   for (const fi of chosen) {
-    blocked.add(fi - 1); blocked.add(fi); blocked.add(fi + 1);
+    if (fi - 1 >= 0) blocked.add(fi - 1);
+    blocked.add(fi);
+    if (fi + 1 < totalTile) blocked.add(fi + 1);
   }
 
   // Weighted random from eligible, respecting adjacency
-  const remaining = eligible.filter(c => !blocked.has(c.i));
+  const remaining = eligible.filter(c =>
+    !blocked.has(c.i) &&
+    chosen.every(p => Math.abs(p - c.i) > 1)
+  );
 
   while (chosen.length < lockCount && remaining.length > 0) {
     const weights = remaining.map(c => c.score);
@@ -413,8 +433,21 @@ export function selectLockPositions(totalTile, lockCount, placement) {
     );
   }
 
+  function hasAdjacent(arr) {
+    arr.sort((a, b) => a - b);
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i] - arr[i - 1] <= 1) return true;
+    }
+    return false;
+  }
+  
   const result = chosen.sort((a, b) => a - b);
-  console.log(`[selectLockPositions] chosen lockPositions=[${result.join(',')}]`);
+  
+  if (hasAdjacent(result)) {
+    console.warn('[selectLockPositions] adjacency detected → retry');
+    return selectLockPositions(totalTile, lockCount, placement);
+  }
+  
   return result;
 }
 

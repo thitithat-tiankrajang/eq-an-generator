@@ -2,174 +2,196 @@ import { HEAVY_SET } from '@/lib/bingoGenerator';
 
 const OPERATORS = new Set(['+', '-', '×', '÷', '+/-', '×/÷', '?']);
 
+// Single tile size used everywhere (board + rack) — keeps them identical
+const TILE_DIM = 48;
 const SIZES = {
-  sm: { dim: 36, fs: 10, ptFs: 6  },
-  md: { dim: 46, fs: 13, ptFs: 7  },
-  lg: { dim: 54, fs: 15, ptFs: 8  },
+  sm: { dim: 40,       fs: 17, ptFs: 7  },
+  md: { dim: TILE_DIM, fs: 20, ptFs: 8  },
+  lg: { dim: TILE_DIM, fs: 20, ptFs: 11  }, // alias to md so rack = board size
 };
 
+export { TILE_DIM };
+
+// Per-token-type font size ratios (relative to TILE_DIM=48)
+// Adjust these values to tune each category independently
+const TOKEN_FS_RATIO = {
+  smallNum:        24 / 48,   // '0'–'9'
+  heavyNum:        22 / 48,   // '10'–'20' (2 chars, needs smaller font)
+  plus:            28 / 48,   // '+'
+  minus:           30 / 48,   // '-'
+  times:           30 / 48,   // '×'
+  divide:          30 / 48,   // '÷'
+  plusMinus:       20 / 48,   // '+/-'
+  timesDivide:     20 / 48,   // '×/÷'
+  blank:           22 / 48,   // '?'
+};
+
+function tokenCategory(token) {
+  if (!token) return 'smallNum';
+  if (token === '?')   return 'blank';
+  if (token === '+/-') return 'plusMinus';
+  if (token === '×/÷') return 'timesDivide';
+  if (token === '+')   return 'plus';
+  if (token === '-')   return 'minus';
+  if (token === '×')   return 'times';
+  if (token === '÷')   return 'divide';
+  if (HEAVY_SET.has(token)) return 'heavyNum';
+  return 'smallNum';
+}
+
 /**
- * roles:
- *  'normal'               – plain tile
- *  'locked'               – pre-filled, amber dot
- *  'locked-wild'          – locked wild tile that resolved to a choice op (shows faded suffix)
- *  'locked-wild-question' – locked ? tile resolved to a value (violet color)
- *  'rack'                 – in the rack, elevated shadow
- *  'selected'             – currently selected (blue ring + lift)
- *  'board-placed'         – placed by user on board
- *  'wild-unresolved'      – wild tile on board needing resolution (orange)
- *  'block'                – expand-mode block tile (green)
- *
- * props:
- *  points     – number badge shown bottom-right (uses source tile's value)
- *  sourceTile – original source tile; when provided, shows faded remainder for choice ops
+ * grid=true  → square corners, right+bottom border only (for collapse grid layout)
+ * grid=false → rounded, full border-2 (rack / standalone use)
  */
-export function BingoTile({ token, role = 'normal', size = 'md', onClick, points, sourceTile }) {
-  const { dim, fs, ptFs } = SIZES[size] ?? SIZES.md;
+export function BingoTile({ token, role = 'normal', size = 'md', onClick, points, sourceTile, grid = false, dimCss }) {
+  const { dim, ptFs } = SIZES[size] ?? SIZES.md;
+  // dimCss lets the board override the pixel dim with a CSS value (e.g. CSS variable).
+  // When provided, scale font sizes proportionally via calc() so they track the tile size.
+  const dimVal  = dimCss ?? dim;
+  const fsRatio = TOKEN_FS_RATIO[tokenCategory(token)];
+  const fsVal   = dimCss
+    ? `calc(${dimCss} * ${fsRatio.toFixed(4)})`
+    : Math.round(dim * fsRatio);
+  const ptFsVal = dimCss ? `calc(${dimCss} * ${(ptFs / dim).toFixed(4)})` : ptFs;
 
-  const BASE = {
-    bg: 'bg-white',
-    border: 'border-stone-400',
-    text: 'text-stone-800',
-  };
-
-  let borderCls = BASE.border;
-  let bgCls     = BASE.bg;
-  let textCls   = BASE.text;
+  let bgCls   = 'bg-stone-100';
+  let textCls = 'text-stone-800';
+  let extra   = '';
+  // In grid mode: border-r + border-b only (outer wrapper provides border-l + border-t)
+  // In standalone mode: full border-2
+  const BORDER_COLOR = grid ? 'border-stone-500' : 'border-stone-400';
+  let borderCls = grid ? `border-r-2 border-b-2 ${BORDER_COLOR}` : `border-2 ${BORDER_COLOR}`;
   let shadow    = '';
-  let extra     = '';
+  let outline   = '';
 
   switch (role) {
     case 'selected':
-      borderCls = 'border-blue-500';
-      bgCls     = 'bg-blue-50';
-      shadow    = '0 0 0 3px rgba(59,130,246,0.35), 0 4px 12px rgba(59,130,246,0.25)';
-      extra     = 'scale-110 cursor-pointer';
+      bgCls     = 'bg-green-500';
+      textCls   = 'text-green-900';
+      borderCls = grid ? 'border-r-2 border-b-2 border-green-500' : 'border-2 border-green-500';
+      extra     = 'cursor-pointer z-10 relative';
       break;
 
-    // 🟩 LOCKED (เด่นสุด)
     case 'locked':
     case 'fixed':
-      borderCls = 'border-stone-500';
-      bgCls     = 'bg-white';
-      shadow    = '0 2px 8px rgba(0,0,0,0.18)';
+      bgCls     = 'bg-stone-50';
+      textCls   = 'text-stone-900';
+      borderCls = grid ? `border-r-2 border-b-2 border-stone-500` : 'border-2 border-stone-500';
       break;
 
     case 'locked-wild':
-      borderCls = 'border-amber-400';
-      bgCls     = 'bg-white';
-      shadow    = '0 2px 8px rgba(0,0,0,0.18)';
+      bgCls     = 'bg-stone-50';
+      textCls   = 'text-stone-900';
+      borderCls = grid ? 'border-r-2 border-b-2 border-stone-500' : 'border-2 border-stone-500';
       break;
 
     case 'locked-wild-question':
-      borderCls = 'border-violet-400';
-      bgCls     = 'bg-white';
-      shadow    = '0 2px 10px rgba(139,92,246,0.25)';
+      bgCls     = 'bg-stone-50';
+      textCls   = 'text-stone-900';
+      borderCls = grid ? 'border-r-2 border-b-2 border-stone-500' : 'border-2 border-stone-500';
       break;
 
-    // 🟫 PLAYER TILE
+    // rack and board-placed share same look
     case 'board-placed':
-      borderCls = 'border-stone-600';
-      bgCls     = 'bg-sky-100';
-      textCls   = 'text-stone-900';
-      shadow    = '0 1px 3px rgba(0,0,0,0.2)';
-      extra     = 'cursor-pointer hover:scale-105 transition-transform';
+    case 'rack':
+      bgCls     = 'bg-green-200';
+      textCls   = 'text-green-950';
+      borderCls = grid
+        ? 'border-r-2 border-b-2 border-green-600'
+        : 'border-2 border-green-600';
+      shadow    = '0 1px 4px rgba(0,0,0,0.10)';
+      extra     = 'cursor-pointer';
       break;
 
     case 'wild-unresolved':
-      borderCls = 'border-orange-500';
-      bgCls     = 'bg-orange-300';
-      textCls   = 'text-stone-900';
-      shadow    = '0 2px 6px rgba(251,146,60,0.25)';
-      extra     = 'cursor-pointer hover:scale-105 transition-transform';
-      break;
-
-    // 🟨 RACK
-    case 'rack':
-      borderCls = 'border-amber-400';
-      bgCls     = 'bg-amber-50'; // 🔥 สว่าง
-      shadow    = '0 2px 6px rgba(0,0,0,0.1)';
-      extra     = 'cursor-pointer hover:scale-105';
+      bgCls     = 'bg-yellow-200';
+      textCls   = 'text-yellow-900';
+      borderCls = grid ? 'border-r-2 border-b-2 border-yellow-500' : 'border-2 border-yellow-500';
+      extra     = 'cursor-pointer';
       break;
 
     case 'block':
-      borderCls = 'border-emerald-500';
       bgCls     = 'bg-emerald-200';
-      shadow    = '0 0 8px rgba(16,185,129,0.25)';
+      textCls   = 'text-emerald-900';
+      borderCls = grid ? 'border-r-2 border-b-2 border-emerald-500' : 'border-2 border-emerald-500';
       break;
 
     default:
-      borderCls = 'border-stone-300';
-      bgCls     = 'bg-stone-300';
+      bgCls     = 'bg-stone-100';
+      textCls   = 'text-stone-700';
       break;
   }
 
-  // ── Tile face content ────────────────────────────────────────────────────────
-  // For locked choice-op tiles: show resolved char prominently + faded rest
+  // ── Face content ──────────────────────────────────────────────────────────────
   let faceContent;
   if (sourceTile === '+/-' && (token === '+' || token === '-')) {
-    const main   = token;
-    const faded  = token === '+' ? '/−' : '/+';
+    const faded = token === '+' ? '/−' : '/+';
+    const fadedFs = dimCss
+      ? `calc(${dimCss} * ${(fsRatio * 0.6).toFixed(4)})`
+      : Math.round(dim * fsRatio * 0.6);
     faceContent = (
       <span className="flex items-baseline leading-none" style={{ letterSpacing: -0.5 }}>
-        <span>{main}</span>
-        <span style={{ color: '#c7c3be', fontSize: fs * 0.62 }}>{faded}</span>
+        <span>{token}</span>
+        <span style={{ color: '#a8a29e', fontSize: fadedFs }}>{faded}</span>
       </span>
     );
   } else if (sourceTile === '×/÷' && (token === '×' || token === '÷')) {
-    const main   = token;
-    const faded  = token === '×' ? '/÷' : '/×';
+    const faded = token === '×' ? '/÷' : '/×';
+    const fadedFs = dimCss
+      ? `calc(${dimCss} * ${(fsRatio * 0.6).toFixed(4)})`
+      : Math.round(dim * fsRatio * 0.6);
     faceContent = (
       <span className="flex items-baseline leading-none" style={{ letterSpacing: -0.5 }}>
-        <span>{main}</span>
-        <span style={{ color: '#c7c3be', fontSize: fs * 0.62 }}>{faded}</span>
+        <span>{token}</span>
+        <span style={{ color: '#a8a29e', fontSize: fadedFs }}>{faded}</span>
       </span>
     );
   } else {
     faceContent = token || '';
   }
 
-  // ── Points badge ─────────────────────────────────────────────────────────────
-  const showPoints = points != null;
+  const rounded = grid ? 'rounded-none' : 'rounded-lg';
 
   return (
     <div
       onClick={onClick}
-      className={`relative flex items-center justify-center shrink-0 rounded-lg border-2 font-mono font-bold select-none transition-all duration-100 ${bgCls} ${borderCls} ${textCls} ${extra}`}
-      style={{ width: dim, height: dim, minWidth: dim, fontSize: fs, letterSpacing: token && token.length > 2 ? -0.5 : 0, boxShadow: shadow }}
+      className={`relative flex items-center justify-center shrink-0 font-mono font-bold select-none transition-colors duration-100 ${rounded} ${bgCls} ${borderCls} ${textCls} ${outline} ${extra} transition-colors duration-100 transition-transform duration-75 active:scale-[0.96]`}
+      style={{ width: dimVal, height: dimVal, minWidth: dimVal, fontSize: fsVal, letterSpacing: token && token.length > 2 ? -1 : 0, boxShadow: shadow }}
     >
       {faceContent}
 
       {/* Lock dot */}
-      {(role === 'locked' || role === 'fixed' || role === 'locked-wild') && token && (
-        <div className="absolute top-1 right-1 w-1 h-1 rounded-full bg-amber-400 opacity-90" />
+      {(role === 'locked' || role === 'fixed') && token && (
+        <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-stone-400" />
+      )}
+      {(role === 'locked-wild') && token && (
+        <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-amber-400" />
       )}
       {role === 'locked-wild-question' && token && (
-        <div className="absolute top-1 right-1 w-1 h-1 rounded-full bg-violet-400 opacity-90" />
+        <div className="absolute top-0.5 right-0.5 w-1 h-1 rounded-full bg-violet-400" />
       )}
 
-      {/* Block bar */}
-      {role === 'block' && (
-        <div className="absolute bottom-0.5 right-0.5 w-1.5 h-0.5 rounded-sm bg-emerald-500 opacity-80" />
-      )}
-
-      {/* Selection dot */}
+      {/* Selection indicator */}
       {role === 'selected' && (
-        <div className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 opacity-90" />
+        <div className="absolute top-0.5 left-0.5 w-1.5 h-1.5 rounded-full bg-green-700" />
       )}
 
-      {/* Points badge — bottom right */}
-      {showPoints && (
+      {/* Wild resolve badge */}
+      {role === 'wild-unresolved' && (
         <div
-          className="absolute bottom-0 right-0 rounded-tl-md font-mono font-bold tabular-nums leading-none select-none"
+          className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-white flex items-center justify-center pointer-events-none z-20"
+          style={{ fontSize: 9, fontWeight: 'bold' }}
+        >!</div>
+      )}
+
+      {/* Points badge */}
+      {points != null && (
+        <div
+          className="absolute bottom-0 right-0 font-mono font-bold tabular-nums leading-none select-none"
           style={{
-            fontSize:        ptFs,
-            lineHeight:      1,
-            padding:         '1px 2px',
-            background:      'rgba(0,0,0,0.10)',
-            color:           'inherit',
-            opacity:         0.75,
-            borderRadius:    '0 0 6px 0',
+            fontSize: ptFsVal, lineHeight: 1, padding: '1px 2px',
+            background: 'rgba(0,0,0,0.12)', color: 'inherit', opacity: 0.7,
+            borderRadius: grid ? '0' : '0 0 6px 0',
           }}
         >
           {points}
@@ -181,7 +203,7 @@ export function BingoTile({ token, role = 'normal', size = 'md', onClick, points
 
 export function SlotLabel({ n }) {
   return (
-    <span className="block text-center font-mono mt-1" style={{ fontSize: 7, color: '#a8a29e', letterSpacing: 0.5 }}>
+    <span className="block text-center font-mono mt-1" style={{ fontSize: 9, color: '#78716c', letterSpacing: 0 }}>
       {n}
     </span>
   );

@@ -28,7 +28,7 @@ import { cn } from "@/lib/utils";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-let _uid = 0;
+let _uid = Date.now();
 const uid = () => ++_uid;
 
 /** Map assignment optionSet.options → generateBingo cfg
@@ -150,6 +150,12 @@ export default function PlayAssignment() {
   const [confirmStop, setConfirmStop] = useState(false);
 
   const submittingRef = useRef(false);
+  // Prevent double-fire on mobile touch events duplicating tiles
+  const handlingRef = useRef(false);
+  // Live refs — always hold the latest board/rack values so handlers never
+  // read stale closure state even when two touch events fire before re-render
+  const boardSlotsRef = useRef([]);
+  const rackTilesRef  = useRef([]);
 
   // ── Timer helpers ──────────────────────────────────────────────────────────
   const stopTimer = useCallback(() => {
@@ -247,6 +253,8 @@ export default function PlayAssignment() {
         }
       });
 
+      rackTilesRef.current  = newRack;
+      boardSlotsRef.current = newSlots;
       setRackTiles(newRack);
       setBoardSlots(newSlots);
       setPhase('playing');
@@ -289,7 +297,15 @@ export default function PlayAssignment() {
 
   // ── Board slot click (filled, user-placed only) ──────────────────────────
   const handleBoardSlotClick = useCallback((slotIndex) => {
-    const slot = boardSlots[slotIndex];
+    if (handlingRef.current) return;
+    handlingRef.current = true;
+    setTimeout(() => { handlingRef.current = false; }, 50);
+
+    // Always read from refs to avoid stale closure on mobile double-fire
+    const curBoard = boardSlotsRef.current;
+    const curRack  = rackTilesRef.current;
+
+    const slot = curBoard[slotIndex];
     if (!slot || !slot.tile || slot.isLocked) return;
 
     // Re-click already-selected board tile
@@ -305,15 +321,17 @@ export default function PlayAssignment() {
 
     // Rack tile selected → swap rack ↔ board
     if (selected?.source === 'rack') {
-      const rackItem = rackTiles[selected.index];
+      const rackItem = curRack[selected.index];
       if (!rackItem) { setSelected(null); return; }
       const incomingTile = rackItem.tile;
       const displaced    = slot.tile;
 
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      const newRack  = rackTiles.map(t => t ? { ...t } : null);
-      newBoard[slotIndex]     = { ...boardSlots[slotIndex], tile: incomingTile, resolvedValue: null };
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      const newRack  = curRack.map(t => t ? { ...t } : null);
+      newBoard[slotIndex]     = { ...curBoard[slotIndex], tile: incomingTile, resolvedValue: null };
       newRack[selected.index] = { id: uid(), tile: displaced };
+      boardSlotsRef.current = newBoard;
+      rackTilesRef.current  = newRack;
       setBoardSlots(newBoard);
       setRackTiles(newRack);
       setSubmitResult(null);
@@ -324,10 +342,11 @@ export default function PlayAssignment() {
 
     // Board tile selected → swap board ↔ board
     if (selected?.source === 'board') {
-      const fromSlot = boardSlots[selected.index];
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      newBoard[slotIndex]      = { ...boardSlots[slotIndex], tile: fromSlot.tile, resolvedValue: fromSlot.resolvedValue };
-      newBoard[selected.index] = { ...boardSlots[selected.index], tile: slot.tile, resolvedValue: slot.resolvedValue };
+      const fromSlot = curBoard[selected.index];
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      newBoard[slotIndex]      = { ...curBoard[slotIndex], tile: fromSlot.tile, resolvedValue: fromSlot.resolvedValue };
+      newBoard[selected.index] = { ...curBoard[selected.index], tile: slot.tile, resolvedValue: slot.resolvedValue };
+      boardSlotsRef.current = newBoard;
       setBoardSlots(newBoard);
       setSubmitResult(null);
       setSelected(null);
@@ -336,20 +355,29 @@ export default function PlayAssignment() {
 
     // Nothing selected → select
     setSelected({ source: 'board', index: slotIndex });
-  }, [boardSlots, rackTiles, selected]);
+  }, [selected]);
 
   // ── Board empty slot click ───────────────────────────────────────────────
   const handleBoardEmptySlotClick = useCallback((slotIndex) => {
+    if (handlingRef.current) return;
+    handlingRef.current = true;
+    setTimeout(() => { handlingRef.current = false; }, 50);
+
     if (!selected) return;
 
+    const curBoard = boardSlotsRef.current;
+    const curRack  = rackTilesRef.current;
+
     if (selected.source === 'rack') {
-      const rackItem = rackTiles[selected.index];
+      const rackItem = curRack[selected.index];
       if (!rackItem) { setSelected(null); return; }
 
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      const newRack  = rackTiles.map(t => t ? { ...t } : null);
-      newBoard[slotIndex]     = { ...boardSlots[slotIndex], tile: rackItem.tile, resolvedValue: null };
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      const newRack  = curRack.map(t => t ? { ...t } : null);
+      newBoard[slotIndex]     = { ...curBoard[slotIndex], tile: rackItem.tile, resolvedValue: null };
       newRack[selected.index] = null;
+      boardSlotsRef.current = newBoard;
+      rackTilesRef.current  = newRack;
       setBoardSlots(newBoard);
       setRackTiles(newRack);
       setSubmitResult(null);
@@ -359,34 +387,44 @@ export default function PlayAssignment() {
     }
 
     if (selected.source === 'board') {
-      const fromSlot = boardSlots[selected.index];
+      const fromSlot = curBoard[selected.index];
       if (!fromSlot || !fromSlot.tile || fromSlot.isLocked) { setSelected(null); return; }
 
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      newBoard[slotIndex]      = { ...boardSlots[slotIndex], tile: fromSlot.tile, resolvedValue: fromSlot.resolvedValue };
-      newBoard[selected.index] = { ...boardSlots[selected.index], tile: null, resolvedValue: null };
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      newBoard[slotIndex]      = { ...curBoard[slotIndex], tile: fromSlot.tile, resolvedValue: fromSlot.resolvedValue };
+      newBoard[selected.index] = { ...curBoard[selected.index], tile: null, resolvedValue: null };
+      boardSlotsRef.current = newBoard;
       setBoardSlots(newBoard);
       setSubmitResult(null);
       setSelected(null);
     }
-  }, [boardSlots, rackTiles, selected]);
+  }, [selected]);
 
   // ── Rack tile click ──────────────────────────────────────────────────────
   const handleRackTileClick = useCallback((rackIndex) => {
+    if (handlingRef.current) return;
+    handlingRef.current = true;
+    setTimeout(() => { handlingRef.current = false; }, 50);
+
     if (wildPicker) { setWildPicker(null); return; }
 
-    const clickedItem = rackTiles[rackIndex];
+    const curBoard = boardSlotsRef.current;
+    const curRack  = rackTilesRef.current;
+
+    const clickedItem = curRack[rackIndex];
     if (!clickedItem) return;
 
     // Board tile selected → swap rack ↔ board
     if (selected?.source === 'board') {
-      const boardSlot = boardSlots[selected.index];
+      const boardSlot = curBoard[selected.index];
       if (!boardSlot || boardSlot.isLocked) { setSelected(null); return; }
 
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      const newRack  = rackTiles.map(t => t ? { ...t } : null);
-      newRack[rackIndex]       = { id: uid(), tile: boardSlots[selected.index].tile };
-      newBoard[selected.index] = { ...boardSlots[selected.index], tile: clickedItem.tile, resolvedValue: null };
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      const newRack  = curRack.map(t => t ? { ...t } : null);
+      newRack[rackIndex]       = { id: uid(), tile: curBoard[selected.index].tile };
+      newBoard[selected.index] = { ...curBoard[selected.index], tile: clickedItem.tile, resolvedValue: null };
+      boardSlotsRef.current = newBoard;
+      rackTilesRef.current  = newRack;
       setBoardSlots(newBoard);
       setRackTiles(newRack);
       setSubmitResult(null);
@@ -403,8 +441,9 @@ export default function PlayAssignment() {
 
     // Other rack tile → swap rack ↔ rack
     if (selected?.source === 'rack') {
-      const newRack = rackTiles.map(t => t ? { ...t } : null);
+      const newRack = curRack.map(t => t ? { ...t } : null);
       [newRack[selected.index], newRack[rackIndex]] = [newRack[rackIndex], newRack[selected.index]];
+      rackTilesRef.current = newRack;
       setRackTiles(newRack);
       setSelected(null);
       return;
@@ -412,40 +451,52 @@ export default function PlayAssignment() {
 
     // Nothing selected → select
     setSelected({ source: 'rack', index: rackIndex });
-  }, [boardSlots, rackTiles, selected, wildPicker]);
+  }, [selected, wildPicker]);
 
   // ── Rack empty slot click ────────────────────────────────────────────────
   const handleRackEmptySlotClick = useCallback((rackIndex) => {
+    if (handlingRef.current) return;
+    handlingRef.current = true;
+    setTimeout(() => { handlingRef.current = false; }, 50);
+
     if (!selected) return;
 
+    const curBoard = boardSlotsRef.current;
+    const curRack  = rackTilesRef.current;
+
     if (selected.source === 'rack') {
-      const newRack = rackTiles.map(t => t ? { ...t } : null);
+      const newRack = curRack.map(t => t ? { ...t } : null);
       newRack[rackIndex]      = newRack[selected.index];
       newRack[selected.index] = null;
+      rackTilesRef.current = newRack;
       setRackTiles(newRack);
       setSelected(null);
       return;
     }
 
     if (selected.source === 'board') {
-      const boardSlot = boardSlots[selected.index];
+      const boardSlot = curBoard[selected.index];
       if (!boardSlot || !boardSlot.tile || boardSlot.isLocked) { setSelected(null); return; }
 
-      const newBoard = boardSlots.map(sl => ({ ...sl }));
-      const newRack  = rackTiles.map(t => t ? { ...t } : null);
+      const newBoard = curBoard.map(sl => ({ ...sl }));
+      const newRack  = curRack.map(t => t ? { ...t } : null);
       newRack[rackIndex]       = { id: uid(), tile: boardSlot.tile };
-      newBoard[selected.index] = { ...boardSlots[selected.index], tile: null, resolvedValue: null };
+      newBoard[selected.index] = { ...curBoard[selected.index], tile: null, resolvedValue: null };
+      boardSlotsRef.current = newBoard;
+      rackTilesRef.current  = newRack;
       setBoardSlots(newBoard);
       setRackTiles(newRack);
       setSubmitResult(null);
       setSelected(null);
     }
-  }, [boardSlots, rackTiles, selected]);
+  }, [selected]);
 
   // ── Recall all ────────────────────────────────────────────────────────────
   const handleRecallAll = useCallback(() => {
-    const newBoard = boardSlots.map(sl => ({ ...sl }));
-    const newRack  = rackTiles.map(t => t ? { ...t } : null);
+    const curBoard = boardSlotsRef.current;
+    const curRack  = rackTilesRef.current;
+    const newBoard = curBoard.map(sl => ({ ...sl }));
+    const newRack  = curRack.map(t => t ? { ...t } : null);
     for (let bi = 0; bi < newBoard.length; bi++) {
       const slot = newBoard[bi];
       if (!slot.tile || slot.isLocked) continue;
@@ -454,22 +505,25 @@ export default function PlayAssignment() {
       newRack[emptyIdx] = { id: uid(), tile: slot.tile };
       newBoard[bi] = { ...slot, tile: null, resolvedValue: null };
     }
+    boardSlotsRef.current = newBoard;
+    rackTilesRef.current  = newRack;
     setBoardSlots(newBoard);
     setRackTiles(newRack);
     setSubmitResult(null);
     setSelected(null);
     setWildPicker(null);
-  }, [boardSlots, rackTiles]);
+  }, []);
 
   // ── Wild tile resolve ────────────────────────────────────────────────────
   const handleWildResolve = useCallback((value) => {
     if (!wildPicker) return;
     const { slotIndex } = wildPicker;
-    const newBoard = boardSlots.map(sl => ({ ...sl }));
+    const newBoard = boardSlotsRef.current.map(sl => ({ ...sl }));
     newBoard[slotIndex] = { ...newBoard[slotIndex], resolvedValue: value };
+    boardSlotsRef.current = newBoard;
     setBoardSlots(newBoard);
     setWildPicker(null);
-  }, [wildPicker, boardSlots]);
+  }, [wildPicker]);
 
   // ── Submit answer ─────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async () => {

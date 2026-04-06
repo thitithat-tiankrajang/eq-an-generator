@@ -165,6 +165,66 @@ function shuffle(arr) {
   return a;
 }
 
+/**
+ * applyTileAssignmentToPlacement
+ *
+ * Adjusts slotProbs in placement so that selectLockPositions respects per-tile-type
+ * lock/rack constraints from cfg.tileAssignmentSpec.
+ *
+ * tileAssignmentSpec keys:
+ *   '<op>'      → specific operator ('+', '-', '×', '÷', '+/-', '×/÷')
+ *   '?'         → blank tile
+ *   '__heavy__' → any heavy tile (10–20)
+ *
+ * For each key with { locked, onRack }:
+ *   - Tile indices of that type are shuffled, then the first `locked` get slotProbs=2
+ *     (≥1 = mustLock in selectLockPositions) and the rest get slotProbs=0 (excluded).
+ *
+ * Exported for testing.
+ */
+export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAssignmentSpec) {
+  if (!tileAssignmentSpec || Object.keys(tileAssignmentSpec).length === 0) return placement;
+
+  const catOf = (tile) => HEAVY_SET.has(tile) ? '__heavy__' : tile;
+
+  // Group tile indices by category
+  const byType = {};
+  solutionTiles.forEach((tile, i) => {
+    const cat = catOf(tile);
+    if (!byType[cat]) byType[cat] = [];
+    byType[cat].push(i);
+  });
+
+  const slotProbs = [...(placement.slotProbs ?? Array(solutionTiles.length).fill(1 / solutionTiles.length))];
+
+  for (const [typeKey, spec] of Object.entries(tileAssignmentSpec)) {
+    const indices = shuffle([...(byType[typeKey] || [])]);
+    if (!indices.length) continue;
+
+    const total = indices.length;
+    let lockedN = null;
+    const safeInt = (v) => (Number.isFinite(v) ? Math.round(v) : null);
+    const lockedVal  = safeInt(spec.locked);
+    const onRackVal  = safeInt(spec.onRack);
+
+    if (lockedVal != null && onRackVal != null) {
+      // Both specified: locked takes priority, onRack is informational
+      lockedN = Math.min(lockedVal, total);
+    } else if (lockedVal != null) {
+      lockedN = Math.min(lockedVal, total);
+    } else if (onRackVal != null) {
+      lockedN = Math.max(0, total - Math.min(onRackVal, total));
+    }
+
+    if (lockedN !== null) {
+      indices.slice(0, lockedN).forEach(i => { slotProbs[i] = 2; });   // mustLock
+      indices.slice(lockedN).forEach(i => { slotProbs[i] = 0; });      // excluded → rack
+    }
+  }
+
+  return { ...placement, slotProbs };
+}
+
 function weightedSample(items, weights) {
   let total = 0;
   for (const w of weights) total += w;
@@ -729,8 +789,11 @@ function _flexifyTileCounts(tileCounts, cfg, eqCount, poolDef = POOL_DEF) {
 
 function pickIntInRange(range, fallbackLo, fallbackHi) {
   const r = toRange(range);
-  const lo = r ? r[0] : fallbackLo;
-  const hi = r ? r[1] : fallbackHi;
+  const rawLo = r ? r[0] : fallbackLo;
+  const rawHi = r ? r[1] : fallbackHi;
+  // Guard against NaN (e.g. from UI state that got corrupted)
+  const lo = (Number.isFinite(rawLo)) ? rawLo : fallbackLo;
+  const hi = (Number.isFinite(rawHi)) ? rawHi : fallbackHi;
   if (hi < lo) return lo;
   return randInt(lo, hi);
 }
@@ -1389,7 +1452,8 @@ export function generateBingo(cfg) {
     const eqCount = resolveEqualCount(mode, cfg);
 
     // Tile Composition Builder + Weighted Expansion
-    const built = hybridTileBuilder(totalTile, cfg, eqCount);
+    // cfg.poolDef overrides the default tile pool (used when a custom tile set is selected)
+    const built = hybridTileBuilder(totalTile, cfg, eqCount, cfg.poolDef ?? POOL_DEF);
     if (!built) continue;
 
     const { tileCounts, seedEquation } = built;
@@ -1446,8 +1510,12 @@ export function generateBingo(cfg) {
       let placement, lockPositions;
       let tries = 0;
       do {
-        placement     = selectRealisticPlacement(totalTile);
-        lockPositions = selectLockPositions(totalTile, lockCount, placement);
+        placement = selectRealisticPlacement(totalTile);
+        // Apply per-tile-type lock/rack constraints (from cfg.tileAssignmentSpec)
+        const adjustedPlacement = applyTileAssignmentToPlacement(
+          solutionTiles, placement, cfg.tileAssignmentSpec
+        );
+        lockPositions = selectLockPositions(totalTile, lockCount, adjustedPlacement);
         tries++;
       } while (
         !passesRealismFilter(placement)
