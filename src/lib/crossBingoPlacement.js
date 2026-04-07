@@ -100,11 +100,9 @@ export async function initPopularityWeights(jsonUrl = '/strip-freq.json') {
       }
       popularityMap[len] = map;
       slotProbsMap[len]  = probsMap;
-      console.log(`[initPopularityWeights] len=${len}: ${map.size} strips loaded, slotProbs available on ${probsMap.size} strips`);
     }
 
     popularityLoaded = true;
-    console.log('[crossBingoPlacement] strip-freq.json loaded successfully.');
   } catch (err) {
     console.error('[crossBingoPlacement] Failed to load strip-freq.json:', err.message);
     popularityMap = {};
@@ -321,13 +319,6 @@ export function selectRealisticPlacement(totalTile, forceHeatmapOnly = false) {
   const fromJson  = probsMap?.get(stripKey);
   const slotProbs = fromJson ?? Array(totalTile).fill(1 / totalTile);
 
-  console.log(
-    `[selectRealisticPlacement] totalTile=${totalTile} → strip=${stripKey}`,
-    fromJson
-      ? `slotProbs from JSON: [${slotProbs.join(', ')}]`
-      : `slotProbs FALLBACK (equal): [${slotProbs.map(p => p.toFixed(3)).join(', ')}]`
-  );
-
   return {
     rowIdx:   strip.row,
     colStart: strip.col,
@@ -384,19 +375,8 @@ export function selectLockPositions(totalTile, lockCount, placement) {
   mustLock.length = 0;
   mustLock.push(...safeMustLock);
 
-  console.log(
-    `[selectLockPositions] totalTile=${totalTile} lockCount=${lockCount}`,
-    `| mustLock=[${mustLock.join(',')}]`,
-    `| eligible=[${eligible.map(c => `${c.i}(${c.score})`).join(', ')}]`,
-    `| excluded(prob=0)=[${Array.from({length: totalTile}, (_, i) => i).filter(i => (probs[i] ?? 0) === 0).join(',')}]`
-  );
-
   // Edge case: force-locks alone exceed quota
   if (mustLock.length > lockCount) {
-    console.warn(
-      `[selectLockPositions] ${mustLock.length} must-lock slots exceed lockCount=${lockCount}. ` +
-      'Using first ' + lockCount + '. Check slotProbs in strip-freq.json.'
-    );
     return mustLock.slice(0, lockCount).sort((a, b) => a - b);
   }
 

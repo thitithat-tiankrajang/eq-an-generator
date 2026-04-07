@@ -31,6 +31,8 @@ export function BingoConfig({
   puzzleSets, setPuzzleSets,
   timerEnabled, setTimerEnabled,
   onGenerate, loading, error, genCount,
+  genProgress = null,
+  onCancel = null,
   showTimer = true,
   mode = 'cross', setMode = () => {},
 }) {
@@ -132,20 +134,43 @@ export function BingoConfig({
         </div>
       )}
 
-      {/* ── Generate button ── */}
-      <button
-        onClick={onGenerate}
-        disabled={loading}
-        className={`w-full mt-4 py-4 rounded-xl border-2 font-bold text-sm tracking-wide transition-all cursor-pointer
-          ${loading
-            ? 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
-            : 'border-amber-600 bg-amber-600 text-white hover:bg-amber-700 hover:border-amber-700 active:scale-[0.99]'}`}
-      >
-        {loading
-          ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>Generating…</span>
-          : `${genCount > 0 ? 'Regenerate' : 'Generate'} (${totalPuzzles} puzzle${totalPuzzles !== 1 ? 's' : ''})`
-        }
-      </button>
+      {/* ── Generate button + cancel ── */}
+      <div className="flex gap-2 mt-4">
+        <button
+          onClick={onGenerate}
+          disabled={loading}
+          className={`flex-1 py-4 rounded-xl border-2 font-bold text-sm tracking-wide transition-all cursor-pointer
+            ${loading
+              ? 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
+              : 'border-amber-600 bg-amber-600 text-white hover:bg-amber-700 hover:border-amber-700 active:scale-[0.99]'}`}
+        >
+          {loading && genProgress
+            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>{genProgress.done} / {genProgress.total}</span>
+            : loading
+            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>Generating…</span>
+            : `${genCount > 0 ? 'Regenerate' : 'Generate'} (${totalPuzzles} puzzle${totalPuzzles !== 1 ? 's' : ''})`
+          }
+        </button>
+
+        {loading && onCancel && (
+          <button
+            onClick={onCancel}
+            className="px-4 py-4 rounded-xl border-2 border-red-300 bg-red-50 text-red-500 font-bold text-sm hover:bg-red-100 hover:border-red-400 transition-colors cursor-pointer"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {/* ── Progress bar ── */}
+      {loading && genProgress && (
+        <div className="mt-2 h-1.5 bg-stone-200 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-amber-500 transition-all duration-150 rounded-full"
+            style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }}
+          />
+        </div>
+      )}
 
       {error && (
         <div className="mt-3 px-4 py-3 rounded-lg border border-red-300 bg-red-50 text-red-700 text-xs font-medium">

@@ -1,0 +1,42 @@
+/**
+ * bingoWorker.js — Web Worker for puzzle generation
+ *
+ * Runs generateBingo() in a separate thread so the UI never freezes.
+ * Cancel by calling worker.terminate() from the main thread.
+ *
+ * Protocol (main → worker):
+ *   { type: 'generate', cfgList: object[] }
+ *
+ * Protocol (worker → main):
+ *   { type: 'result',  result, done, total }  — one puzzle done
+ *   { type: 'done' }                           — all puzzles complete
+ *   { type: 'error',   message: string }       — generator threw
+ */
+
+import { generateBingo } from './bingoGenerator.js';
+import { initPopularityWeights } from './crossBingoPlacement.js';
+
+// Pre-load strip-freq.json once when worker boots.
+// If it fails, generator falls back to pure heatmap (still works, just different distribution).
+const ready = initPopularityWeights().catch(() => {});
+
+self.onmessage = async (e) => {
+  if (e.data?.type !== 'generate') return;
+
+  await ready;
+
+  const { cfgList } = e.data;
+  const total = cfgList.length;
+
+  for (let i = 0; i < total; i++) {
+    try {
+      const result = generateBingo(cfgList[i]);
+      self.postMessage({ type: 'result', result, done: i + 1, total });
+    } catch (err) {
+      self.postMessage({ type: 'error', message: err.message });
+      return;
+    }
+  }
+
+  self.postMessage({ type: 'done' });
+};

@@ -1,12 +1,11 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import {
-  generateBingo, isValidEquation,
+  isValidEquation,
   WILD_TILES, TILE_POINTS,
 } from '@/lib/bingoGenerator';
+import { generateBatchAsync, buildCfgList } from '@/lib/generateBatch';
 import { BingoHeader }   from '@/components/bingo/BingoHeader';
 import { BingoConfig, DEFAULT_SETS }   from '@/components/bingo/BingoConfig';
-import { DEFAULT_ADV_CFG, buildGeneratorConfig }
-                         from '@/components/bingo/BingoAdvancedConfig';
 import { BingoBoard } from '@/components/bingo/BingoBoard';
 import { BingoRack }     from '@/components/bingo/BingoRack';
 import { BingoTile }     from '@/components/bingo/BingoTile';
@@ -101,9 +100,11 @@ export default function App() {
   const [currentIdx,   setCurrentIdx]   = useState(0);
 
   // ── Loading / error ───────────────────────────────────────────────────────
-  const [error,    setError]    = useState('');
-  const [loading,  setLoading]  = useState(false);
-  const [genCount, setGenCount] = useState(0);
+  const [error,       setError]       = useState('');
+  const [loading,     setLoading]     = useState(false);
+  const [genCount,    setGenCount]    = useState(0);
+  const [genProgress, setGenProgress] = useState(null); // { done, total } | null
+  const cancelRef = useRef(null);
 
   // ── Timer ─────────────────────────────────────────────────────────────────
   const [timerMs,     setTimerMs]     = useState(0);
@@ -124,7 +125,6 @@ export default function App() {
   // ── Reveal solution ───────────────────────────────────────────────────────
   const [revealed, setRevealed] = useState(false);
 
-  const genTimerRef = useRef(null);
 
   // ─────────────────────────────────────────────────────────────────────────
   // DERIVED CURRENT STATE
@@ -206,37 +206,49 @@ export default function App() {
   // ─────────────────────────────────────────────────────────────────────────
   // GENERATE
   // ─────────────────────────────────────────────────────────────────────────
+  const handleCancelGenerate = useCallback(() => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    setLoading(false);
+    setGenProgress(null);
+  }, []);
+
   const generate = useCallback(() => {
-    setLoading(true); setError('');
-    if (genTimerRef.current) clearTimeout(genTimerRef.current);
-    genTimerRef.current = setTimeout(() => {
-      try {
-        const results = [];
-        for (const s of puzzleSets) {
-          const poolDef = s.tileSetId
-            ? (tileSetsCache.current.find(ts => ts.id === s.tileSetId)?.tiles ?? null)
-            : null;
-          const cfg = buildGeneratorConfig(mode, s.tileCount, s.advancedCfg ?? DEFAULT_ADV_CFG, poolDef);
-          for (let i = 0; i < s.count; i++) {
-            results.push(generateBingo(cfg));
-          }
-        }
-        setPuzzleList(results);
-        setPuzzleStates(results.map(r => initPuzzleState(r)));
-        setCurrentIdx(0);
+    cancelRef.current?.();
+    setLoading(true);
+    setError('');
+    setPuzzleList([]);
+    setPuzzleStates([]);
+    setCurrentIdx(0);
+    stopTimer();
+    setTimerMs(0);
+    setSelected(null);
+    setWildPicker(null);
+    setRevealed(false);
+    setAnalysisOpen(false);
+
+    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache.current);
+    setGenProgress({ done: 0, total: cfgList.length });
+
+    cancelRef.current = generateBatchAsync(cfgList, {
+      onEach: (result, done, total) => {
+        setGenProgress({ done, total });
+        setPuzzleList(prev => [...prev, result]);
+        setPuzzleStates(prev => [...prev, initPuzzleState(result)]);
+      },
+      onDone: () => {
         setGenCount(n => n + 1);
-        stopTimer();
-        setTimerMs(0);
-        setSelected(null);
-        setWildPicker(null);
-        setRevealed(false);
-        setAnalysisOpen(false);
-      } catch (e) {
-        setError(e.message);
-      } finally {
         setLoading(false);
-      }
-    }, 20);
+        setGenProgress(null);
+        cancelRef.current = null;
+      },
+      onError: (e) => {
+        setError(e.message);
+        setLoading(false);
+        setGenProgress(null);
+        cancelRef.current = null;
+      },
+    });
   }, [mode, puzzleSets, stopTimer]);
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -577,6 +589,7 @@ export default function App() {
           timerEnabled={timerEnabled} setTimerEnabled={setTimerEnabled}
           onGenerate={generate} loading={loading}
           error={error} genCount={genCount}
+          genProgress={genProgress} onCancel={handleCancelGenerate}
         />
 
         {/* ── Puzzle navigation bar ─────────────────────────────────── */}

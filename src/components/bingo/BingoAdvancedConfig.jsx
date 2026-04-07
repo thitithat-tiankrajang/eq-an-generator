@@ -81,31 +81,75 @@ function countActive(adv) {
 // ── NumStepper ────────────────────────────────────────────────────────────────
 function NumStepper({ value, onChange, min = 0, max = 9, size = 'md' }) {
   const safe = Number.isFinite(value) ? value : min;
-  const btnBase = 'font-bold flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer active:scale-95 select-none';
+
+  const btnBase =
+    'font-bold flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed transition-colors cursor-pointer active:scale-95 select-none';
+
+  const handleDec = (e) => {
+    e.stopPropagation();
+    onChange(Math.max(min, safe - 1)); // ✅ FIX
+  };
+
+  const handleInc = (e) => {
+    e.stopPropagation();
+    onChange(Math.min(max, safe + 1));
+  };
+
   if (size === 'sm') {
     return (
-      <div className="flex items-center gap-0.5">
-        <button type="button" onClick={() => onChange(Math.max(min, safe - 1))} disabled={safe <= min}
-          className={`${btnBase} h-8 w-8 rounded-lg border border-stone-300 bg-white text-stone-600 text-sm hover:border-amber-500 hover:text-amber-600`}>
+      <div
+        className="flex items-center gap-0.5"
+        onClick={(e) => e.stopPropagation()} // ✅ กัน click ทะลุทั้ง block
+      >
+        <button
+          type="button"
+          onClick={handleDec}
+          disabled={safe <= min}
+          className={`${btnBase} h-8 w-8 rounded-lg border border-stone-300 bg-white text-stone-600 text-sm hover:border-amber-500 hover:text-amber-600`}
+        >
           −
         </button>
-        <span className="w-5 text-center text-xs font-bold tabular-nums text-stone-800">{safe}</span>
-        <button type="button" onClick={() => onChange(Math.min(max, safe + 1))} disabled={safe >= max}
-          className={`${btnBase} h-8 w-8 rounded-lg border border-stone-300 bg-white text-stone-600 text-sm hover:border-amber-500 hover:text-amber-600`}>
+
+        <span className="w-5 text-center text-xs font-bold tabular-nums text-stone-800">
+          {safe}
+        </span>
+
+        <button
+          type="button"
+          onClick={handleInc}
+          disabled={safe >= max}
+          className={`${btnBase} h-8 w-8 rounded-lg border border-stone-300 bg-white text-stone-600 text-sm hover:border-amber-500 hover:text-amber-600`}
+        >
           +
         </button>
       </div>
     );
   }
+
   return (
-    <div className="flex items-center gap-1">
-      <button type="button" onClick={() => onChange(Math.max(min, safe - 1))} disabled={safe <= min}
-        className={`${btnBase} h-10 w-10 rounded-xl border-2 border-stone-300 bg-white text-stone-600 text-base hover:border-amber-500 hover:text-amber-600`}>
+    <div
+      className="flex items-center gap-1"
+      onClick={(e) => e.stopPropagation()} // ✅ กันทะลุ
+    >
+      <button
+        type="button"
+        onClick={handleDec}
+        disabled={safe <= min}
+        className={`${btnBase} h-10 w-10 rounded-xl border-2 border-stone-300 bg-white text-stone-600 text-base hover:border-amber-500 hover:text-amber-600`}
+      >
         −
       </button>
-      <span className="w-7 text-center text-sm font-bold tabular-nums text-stone-800">{safe}</span>
-      <button type="button" onClick={() => onChange(Math.min(max, safe + 1))} disabled={safe >= max}
-        className={`${btnBase} h-10 w-10 rounded-xl border-2 border-stone-300 bg-white text-stone-600 text-base hover:border-amber-500 hover:text-amber-600`}>
+
+      <span className="w-7 text-center text-sm font-bold tabular-nums text-stone-800">
+        {safe}
+      </span>
+
+      <button
+        type="button"
+        onClick={handleInc}
+        disabled={safe >= max}
+        className={`${btnBase} h-10 w-10 rounded-xl border-2 border-stone-300 bg-white text-stone-600 text-base hover:border-amber-500 hover:text-amber-600`}
+      >
         +
       </button>
     </div>
