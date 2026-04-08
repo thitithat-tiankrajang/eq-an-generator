@@ -826,7 +826,9 @@ function buildTileCountsBasedOnConfig(totalTile, cfg, eqCount, poolDef = POOL_DE
   const blankTarget = pickIntInRange(cfg.blankCount,    0, Math.min(2, totalTile - eqCount - 3));
 
   // 3) Operators: respect operatorSpec first (min), then fill to opTarget
-  const opsAll = ['+','-','×','÷','+/-','×/÷'];
+  // Shuffle core ops each call to avoid systematic ordering bias across retries.
+  const coreOpsShuffled = shuffle(['+', '-', '×', '÷']);
+  const opsAll = [...coreOpsShuffled, '+/-', '×/÷'];
   const opSpec = cfg.operatorSpec || null;
 
   if (opSpec) {
@@ -1445,15 +1447,51 @@ export function generateBingo(cfg) {
   validateConfig(cfg);
   const { mode, totalTile } = cfg;
 
-  const MAX_RETRIES = 180;
   const DFS_RESULTS_LIMIT = 1;
 
+  // ── Pre-commit opTarget once per puzzle ───────────────────────────────────
+  // Without this, DFS survivorship bias causes 2-op to dominate: each retry
+  // re-rolls opTarget randomly, but opTarget=2 has a much higher DFS success
+  // rate than 1 or 3, so it wins almost every time.
+  const eqCountGuess = mode === 'cross' ? 1 : 2;
+  const opHiClamp = Math.min(6, totalTile - eqCountGuess - 2);
+  const opRange = toRange(cfg.operatorCount);
+  const rawOpLo = opRange ? opRange[0] : 2;
+  const rawOpHi = opRange ? opRange[1] : 2;
+  const opLo = Math.max(1, Math.min(rawOpLo, opHiClamp));
+  const opHi = Math.min(opHiClamp, Math.max(rawOpHi, opLo));
+  const committedOpCount = randInt(opLo, opHi);
+
+  // ── Pre-commit operator type for 1-op puzzles ─────────────────────────────
+  // Without this, ×/÷ tiles have lower DFS success rates (fewer valid integer
+  // factorizations in the random digit pool) → +/- dominate by survivorship.
+  // We commit to one operator type and retry hard before falling back.
+  let cfgCommitted = { ...cfg, operatorCount: [committedOpCount, committedOpCount] };
+  if (committedOpCount === 1 && !cfg.operatorSpec) {
+    // Shuffle all 4 core ops to pick uniformly; slight weight-up × and ÷
+    // to counteract their naturally lower DFS success rate.
+    const picked = weightedSample(['+', '-', '×', '÷'], [3, 3, 5, 5]);
+    cfgCommitted = {
+      ...cfgCommitted,
+      operatorSpec: { '+': [0,0], '-': [0,0], '×': [0,0], '÷': [0,0], '+/-': [0,0], '×/÷': [0,0], [picked]: [1,1] },
+    };
+  }
+
+  // ÷ / × with 1 op need more retries (fewer valid tile combos pass DFS).
+  const committedOp1 = cfgCommitted.operatorSpec
+    ? Object.keys(cfgCommitted.operatorSpec).find(k => {
+        const r = toRange(cfgCommitted.operatorSpec[k]);
+        return r && r[0] >= 1;
+      })
+    : null;
+  const MAX_RETRIES = (committedOp1 === '÷' || committedOp1 === '×') ? 360 : 180;
+
   for (let retry = 0; retry < MAX_RETRIES; retry++) {
-    const eqCount = resolveEqualCount(mode, cfg);
+    const eqCount = resolveEqualCount(mode, cfgCommitted);
 
     // Tile Composition Builder + Weighted Expansion
     // cfg.poolDef overrides the default tile pool (used when a custom tile set is selected)
-    const built = hybridTileBuilder(totalTile, cfg, eqCount, cfg.poolDef ?? POOL_DEF);
+    const built = hybridTileBuilder(totalTile, cfgCommitted, eqCount, cfgCommitted.poolDef ?? POOL_DEF);
     if (!built) continue;
 
     const { tileCounts, seedEquation } = built;

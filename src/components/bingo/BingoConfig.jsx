@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { BingoAdvancedConfig, DEFAULT_ADV_CFG } from '@/components/bingo/BingoAdvancedConfig';
 import { api } from '@/api/apiClient';
 
@@ -35,14 +35,21 @@ export function BingoConfig({
   onCancel = null,
   showTimer = true,
   mode = 'cross', setMode = () => {},
+  onTileSetsLoaded = null,
 }) {
   const totalPuzzles = puzzleSets.reduce((s, p) => s + (Number(p.count) || 1), 0);
 
   // ── Fetch tile sets once ──────────────────────────────────────────────────
   const [tileSets, setTileSets] = useState([]);
+  const onTileSetsLoadedRef = useRef(onTileSetsLoaded);
+  useEffect(() => { onTileSetsLoadedRef.current = onTileSetsLoaded; });
   useEffect(() => {
     api.tileSets.list()
-      .then(res => setTileSets(res.tileSets ?? res ?? []))
+      .then(res => {
+        const sets = res.tileSets ?? res ?? [];
+        setTileSets(sets);
+        onTileSetsLoadedRef.current?.(sets);
+      })
       .catch(() => setTileSets([]));
   }, []);
 
@@ -280,10 +287,10 @@ function SetRow({ set, mode, label, tileSets, onChange, onRemove }) {
             onClick={() => onChange({ count: Math.max(1, count - 1) })}
             className="h-11 w-11 rounded-lg border-2 border-stone-300 bg-white text-stone-600 font-bold text-lg hover:border-amber-500 hover:text-amber-600 transition-colors cursor-pointer flex items-center justify-center shrink-0 select-none active:scale-95"
           >−</button>
-          <span className="flex-1 text-center text-base font-bold text-stone-800 tabular-nums select-none">{count}</span>
+          <CountInput value={count} onChange={v => onChange({ count: v })} />
           <button
             type="button"
-            onClick={() => onChange({ count: Math.min(100, count + 1) })}
+            onClick={() => onChange({ count: Math.min(1000, count + 1) })}
             className="h-11 w-11 rounded-lg border-2 border-stone-300 bg-white text-stone-600 font-bold text-lg hover:border-amber-500 hover:text-amber-600 transition-colors cursor-pointer flex items-center justify-center shrink-0 select-none active:scale-95"
           >+</button>
         </div>
@@ -301,6 +308,48 @@ function SetRow({ set, mode, label, tileSets, onChange, onRemove }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ── CountInput ────────────────────────────────────────────────────────────────
+function CountInput({ value, onChange }) {
+  const [raw, setRaw] = useState(String(value));
+  const [prevValue, setPrevValue] = useState(value);
+  const [isFocused, setIsFocused] = useState(false);
+
+  // Sync from parent (e.g. +/- button) only while not typing.
+  // Calling setState during render is the React-recommended pattern for
+  // derived state from props — no useEffect, no ref reads during render.
+  if (!isFocused && prevValue !== value) {
+    setPrevValue(value);
+    setRaw(String(value));
+  }
+
+  const handleChange = (e) => {
+    const str = e.target.value.replace(/\D/g, '');
+    setRaw(str);
+    const num = parseInt(str, 10);
+    if (!isNaN(num) && num >= 1 && num <= 1000) onChange(num);
+  };
+
+  const handleBlur = () => {
+    setIsFocused(false);
+    const num = parseInt(raw, 10);
+    const clamped = !isNaN(num) ? Math.min(1000, Math.max(1, num)) : value;
+    setRaw(String(clamped));
+    if (clamped !== value) onChange(clamped);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={raw}
+      onChange={handleChange}
+      onFocus={() => setIsFocused(true)}
+      onBlur={handleBlur}
+      className="flex-1 text-center text-base font-bold text-stone-800 tabular-nums border-2 border-stone-300 rounded-lg h-11 bg-white focus:border-amber-500 focus:outline-none min-w-0"
+    />
   );
 }
 

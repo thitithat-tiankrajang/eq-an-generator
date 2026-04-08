@@ -1,7 +1,34 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { BingoConfig, DEFAULT_SETS } from '@/components/bingo/BingoConfig';
 import { generateBatchAsync, buildCfgList } from '@/lib/generateBatch';
 import { TILE_POINTS } from '@/lib/amathTokens';
+
+// ─── SLOT DISPLAY (UI text view) ──────────────────────────────────────────────
+const SLOT_DISPLAY = {
+  px1:     { label: '__',   cls: 'bg-stone-50 border-stone-200 text-stone-400' },
+  px2:     { label: '×2',   cls: 'bg-orange-50 border-orange-300 text-orange-600 font-semibold' },
+  px3:     { label: '×3',   cls: 'bg-blue-50 border-blue-300 text-blue-600 font-semibold' },
+  px3star: { label: '★',    cls: 'bg-sky-50 border-sky-300 text-sky-500 font-bold' },
+  ex2:     { label: 'W×2',  cls: 'bg-yellow-50 border-yellow-300 text-yellow-700 font-semibold' },
+  ex3:     { label: 'W×3',  cls: 'bg-red-50 border-red-300 text-red-600 font-semibold' },
+};
+
+// ─── SCORE CALCULATOR (for solution sheet) ────────────────────────────────────
+function computeSolutionScore(puzzle) {
+  if (!puzzle.solutionTiles || !puzzle.boardSlots) return null;
+  let letterTotal = 0, wordMult = 1;
+  for (let i = 0; i < puzzle.boardSlots.length; i++) {
+    const tile = puzzle.solutionTiles[i];
+    const pts = TILE_POINTS[tile] ?? 0;
+    const st = puzzle.boardSlots[i].isLocked ? 'px1' : (puzzle.boardSlots[i].slotType ?? 'px1');
+    if (st === 'px2') letterTotal += pts * 2;
+    else if (st === 'px3' || st === 'px3star') letterTotal += pts * 3;
+    else letterTotal += pts;
+    if (st === 'ex2') wordMult *= 2;
+    if (st === 'ex3') wordMult *= 3;
+  }
+  return letterTotal * wordMult + 40;
+}
 
 // ─── SORT RACK ────────────────────────────────────────────────────────────────
 
@@ -114,6 +141,49 @@ function PuzzleCard({ puzzle, index }) {
   );
 }
 
+// ─── TEXT PUZZLE ROW (colored UI preview) ─────────────────────────────────────
+
+function SlotChip({ slot }) {
+  if (slot.isLocked) {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded border border-amber-400 bg-amber-100 text-amber-900 font-bold text-[11px] font-mono mr-0.5">
+        {slot.resolvedValue ?? slot.tile}
+      </span>
+    );
+  }
+  const st = slot.slotType ?? 'px1';
+  const cfg = SLOT_DISPLAY[st] ?? SLOT_DISPLAY.px1;
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[11px] font-mono mr-0.5 ${cfg.cls}`}>
+      {cfg.label}
+    </span>
+  );
+}
+
+function TextPuzzleRow({ puzzle, index, showSolution }) {
+  const rack = sortRack(puzzle.rackTiles);
+  const score = showSolution ? computeSolutionScore(puzzle) : null;
+  return (
+    <div className="font-mono text-xs leading-relaxed">
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
+        <span className="text-stone-400 mr-1 shrink-0">{index + 1}.</span>
+        {puzzle.boardSlots.map((s, i) => <SlotChip key={i} slot={s} />)}
+        <span className="text-stone-400 mx-1 shrink-0">rack:</span>
+        {rack.map((t, i) => (
+          <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded border border-stone-200 bg-white text-stone-700 text-[11px] font-mono mr-0.5">
+            {t}
+          </span>
+        ))}
+      </div>
+      {showSolution && puzzle.equation && (
+        <div className="mt-0.5 ml-6 text-emerald-600 text-[11px]">
+          → {puzzle.equation}{score != null ? ` (${score}pts)` : ''}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── PDF BUILDER ──────────────────────────────────────────────────────────────
 
 function tileHtml(value, cls, extraLabel = '') {
@@ -122,7 +192,7 @@ function tileHtml(value, cls, extraLabel = '') {
   return `<span class="tile ${cls}"><span class="tv">${value}</span>${ptBadge}${extraLabel}</span>`;
 }
 
-function buildPrintHtml({ puzzles, title, colorMode }) {
+function buildPrintHtml({ puzzles, title, colorMode, includeSolution = false }) {
   const PAGE_SIZE = 26;
   const PER_COL = Math.ceil(PAGE_SIZE / 2); // 13
 
@@ -140,11 +210,15 @@ function buildPrintHtml({ puzzles, title, colorMode }) {
       .map(t => tileHtml(t, 'given'))
       .join('');
 
+    const solutionLine = includeSolution && p.equation
+      ? `<div class="sol">→ ${p.equation}${p.solutionScore != null ? `  (${p.solutionScore}pts)` : ''}</div>`
+      : '';
+
     return `
 <div class="puzzle">
   <div class="row"><div class="idx">#${i + 1}</div><div class="line">${board}</div></div>
   <div class="row"><div class="idx">R</div><div class="line">${rack}</div></div>
-  <div class="ans">Point: ______ </div>
+  ${includeSolution ? solutionLine : '<div class="ans">Point: ______ </div>'}
 </div>`;
   };
 
@@ -243,6 +317,7 @@ h1 { font-size: 14px; margin-bottom: 2px; }
 }
 .slot-label.star { font-size: 13px; opacity: 0.15; }
 .ans { font-size: 9px; color: #888; margin-left: 23px; margin-top: 1px; }
+.sol { font-size: 8.5px; color: #16a34a; margin-left: 23px; margin-top: 1px; font-weight: 600; }
 
 ${colorCss}
 </style>
@@ -265,7 +340,21 @@ export function PuzzlePdfGenerator() {
   const [genProgress, setGenProgress] = useState(null);
   const [pdfTitle, setPdfTitle] = useState('A-MATH Bingo Sheet');
   const [pdfColorMode, setPdfColorMode] = useState(false);
+  const [tileSetsCache, setTileSetsCache] = useState([]);
+
+  // Text output / typewriter
+  const [revealedCount, setRevealedCount] = useState(0);
+  const [isTyping, setIsTyping] = useState(false);
+  const [showTextSolution, setShowTextSolution] = useState(false);
+  const typingRef = useRef(null);
+
+  // Puzzle list panel
+  const [showPuzzleList, setShowPuzzleList] = useState(false);
+
   const cancelRef = useRef(null);
+
+  // Cleanup typewriter on unmount
+  useEffect(() => () => clearInterval(typingRef.current), []);
 
   const handleCancel = useCallback(() => {
     cancelRef.current?.();
@@ -279,9 +368,11 @@ export function PuzzlePdfGenerator() {
     setLoading(true);
     setError(null);
     setPuzzles([]);
+    setRevealedCount(0);
+    setShowPuzzleList(false);
     setGenProgress({ done: 0, total: puzzleSets.reduce((s, p) => s + p.count, 0) });
 
-    const cfgList = buildCfgList(puzzleSets, mode);
+    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache);
 
     cancelRef.current = generateBatchAsync(cfgList, {
       onEach: (result, done, total) => {
@@ -301,10 +392,28 @@ export function PuzzlePdfGenerator() {
         cancelRef.current = null;
       },
     });
-  }, [puzzleSets, mode]);
+  }, [puzzleSets, mode, tileSetsCache]);
 
-  const handlePdf = useCallback(() => {
-    const html = buildPrintHtml({ puzzles, title: pdfTitle, colorMode: pdfColorMode });
+  const handleStartTypewriter = useCallback(() => {
+    clearInterval(typingRef.current);
+    setRevealedCount(0);
+    setIsTyping(true);
+    let count = 0;
+    typingRef.current = setInterval(() => {
+      count++;
+      setRevealedCount(count);
+      if (count >= puzzles.length) {
+        clearInterval(typingRef.current);
+        setIsTyping(false);
+      }
+    }, 60);
+  }, [puzzles.length]);
+
+  const handlePdf = useCallback((withSolution) => {
+    const puzzlesWithScore = withSolution
+      ? puzzles.map(p => ({ ...p, solutionScore: computeSolutionScore(p) }))
+      : puzzles;
+    const html = buildPrintHtml({ puzzles: puzzlesWithScore, title: pdfTitle, colorMode: pdfColorMode, includeSolution: withSolution });
     const win = window.open('', '_blank');
     if (!win) return;
     win.document.write(html);
@@ -328,42 +437,105 @@ export function PuzzlePdfGenerator() {
         showTimer={false}
         mode={mode}
         setMode={setMode}
+        onTileSetsLoaded={setTileSetsCache}
       />
 
       {puzzles.length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-3">
+        <div className="space-y-3">
+
+          {/* ── PDF Controls ── */}
+          <div className="bg-white rounded-xl border border-stone-200 p-3 space-y-2">
             <input
               type="text"
               value={pdfTitle}
               onChange={e => setPdfTitle(e.target.value)}
               placeholder="ชื่อ PDF"
-              className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white"
+              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white"
             />
-            <button
-              onClick={() => setPdfColorMode(v => !v)}
-              className={`px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer border shrink-0 transition-colors ${
-                pdfColorMode
-                  ? 'bg-violet-100 border-violet-400 text-violet-700'
-                  : 'bg-gray-100 border-gray-300 text-gray-600'
-              }`}
-              title="สลับโหมดสี / ขาวดำ"
-            >
-              {pdfColorMode ? 'สี' : 'ขาวดำ'}
-            </button>
-            <button
-              onClick={handlePdf}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold cursor-pointer border-none shrink-0"
-            >
-              พิมพ์ / PDF ({puzzles.length})
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setPdfColorMode(v => !v)}
+                className={`px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer border transition-colors ${
+                  pdfColorMode ? 'bg-violet-100 border-violet-400 text-violet-700' : 'bg-gray-100 border-gray-300 text-gray-600'
+                }`}
+              >
+                {pdfColorMode ? 'สี' : 'ขาวดำ'}
+              </button>
+              <button
+                onClick={() => handlePdf(false)}
+                className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold cursor-pointer border-none"
+              >
+                พิมพ์โจทย์ ({puzzles.length})
+              </button>
+              <button
+                onClick={() => handlePdf(true)}
+                className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-semibold cursor-pointer border-none"
+              >
+                พิมพ์ + เฉลย
+              </button>
+            </div>
           </div>
 
-          <div className="space-y-2">
-            {puzzles.map((p, i) => (
-              <PuzzleCard key={i} puzzle={p} index={i} />
-            ))}
+          {/* ── Text Output (typewriter) ── */}
+          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-stone-50 border-b border-stone-100">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-stone-600">Text Output</span>
+                {revealedCount > 0 && !isTyping && (
+                  <span className="text-[10px] text-stone-400">{revealedCount} ข้อ</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowTextSolution(v => !v)}
+                  className={`px-2 py-1 rounded text-[11px] font-semibold border cursor-pointer transition-colors ${
+                    showTextSolution ? 'bg-emerald-100 border-emerald-400 text-emerald-700' : 'bg-stone-100 border-stone-300 text-stone-500'
+                  }`}
+                >
+                  {showTextSolution ? '+ เฉลย' : 'โจทย์อย่างเดียว'}
+                </button>
+                <button
+                  onClick={handleStartTypewriter}
+                  disabled={isTyping}
+                  className="px-3 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer bg-amber-500 border-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-wait transition-colors"
+                >
+                  {isTyping ? '⏳ กำลังสร้าง…' : revealedCount > 0 ? '↺ สร้างใหม่' : '▶ สร้าง Text'}
+                </button>
+              </div>
+            </div>
+
+            {revealedCount > 0 && (
+              <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
+                {puzzles.slice(0, revealedCount).map((p, i) => (
+                  <TextPuzzleRow key={i} puzzle={p} index={i} showSolution={showTextSolution} />
+                ))}
+                {isTyping && (
+                  <span className="inline-block w-1.5 h-4 bg-amber-400 animate-pulse rounded-sm" />
+                )}
+              </div>
+            )}
           </div>
+
+          {/* ── Puzzle List (collapsible) ── */}
+          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
+            <button
+              onClick={() => setShowPuzzleList(v => !v)}
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-stone-50 transition-colors cursor-pointer"
+            >
+              <span className="text-sm font-semibold text-stone-700">
+                ดูโจทย์ทั้งหมด ({puzzles.length} ข้อ)
+              </span>
+              <span className="text-stone-400 text-sm">{showPuzzleList ? '▲' : '▼'}</span>
+            </button>
+            {showPuzzleList && (
+              <div className="border-t border-stone-100 p-3 space-y-2">
+                {puzzles.map((p, i) => (
+                  <PuzzleCard key={i} puzzle={p} index={i} />
+                ))}
+              </div>
+            )}
+          </div>
+
         </div>
       )}
     </div>

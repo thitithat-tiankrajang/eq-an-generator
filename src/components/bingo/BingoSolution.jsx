@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 
 // ── Inline solver for board-constrained solutions ─────────────────────────────
 // (mirrors analysisEngine logic but supports fixed locked positions)
@@ -230,16 +230,32 @@ function TokenChip({ token, slotType, isLocked }) {
 
 // ── BingoSolution ─────────────────────────────────────────────────────────────
 
-export function BingoSolution({ result, revealed, setRevealed }) {
+export function BingoSolution({ result }) {
+  // solutions: null = not computed yet, array = computed (may be empty)
   const [solutions, setSolutions] = useState(null);
   const [computing, setComputing] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [prevResult, setPrevResult] = useState(result);
 
-  useEffect(() => {
-    if (!revealed || !result) return;
+  // Reset when puzzle changes (derived state pattern — no useEffect)
+  if (result !== prevResult) {
+    setPrevResult(result);
     setSolutions(null);
+    setOpen(false);
+  }
+
+  const handleClick = () => {
+    if (computing) return;
+
+    // Already computed → just toggle visibility
+    if (solutions !== null) {
+      setOpen(v => !v);
+      return;
+    }
+
+    // First time → compute then open
     setComputing(true);
-    // Defer to next microtask so UI can update first
-    const id = setTimeout(() => {
+    setTimeout(() => {
       try {
         const sols = findBoardSolutions(result.boardSlots, result.rackTiles);
         setSolutions(sols);
@@ -249,50 +265,52 @@ export function BingoSolution({ result, revealed, setRevealed }) {
       }
       setComputing(false);
     }, 0);
-    return () => clearTimeout(id);
-  }, [revealed, result]);
+  };
 
   if (!result) return null;
+
+  const computed = solutions !== null;
+  const count = solutions?.length ?? 0;
 
   return (
     <>
       <div className="text-center mb-3">
         <button
-          onClick={() => setRevealed(v => !v)}
-          className={`px-6 py-2 rounded-lg border font-mono text-[10px] tracking-[0.25em] cursor-pointer transition-all
-            ${revealed
-              ? 'border-emerald-300 bg-emerald-50 text-emerald-600'
-              : 'border-stone-200 bg-stone-50 text-stone-400 hover:border-stone-300'}`}
+          onClick={handleClick}
+          disabled={computing}
+          className={`px-6 py-2 rounded-lg border font-mono text-[10px] tracking-[0.25em] transition-all
+            ${computing
+              ? 'border-stone-200 bg-stone-50 text-stone-400 cursor-wait'
+              : computed
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-600 cursor-pointer hover:bg-emerald-100'
+                : 'border-stone-200 bg-stone-50 text-stone-400 hover:border-stone-300 cursor-pointer'}`}
         >
-          {revealed ? '▲ HIDE SOLUTIONS' : '▼ REVEAL SOLUTIONS'}
+          {computing
+            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>COMPUTING…</span>
+            : computed
+              ? `${count} SOLUTION${count !== 1 ? 'S' : ''} ${open ? '▲' : '▼'}`
+              : '▶ CALCULATE SOLUTIONS'
+          }
         </button>
       </div>
 
-      {revealed && (
+      {open && computed && (
         <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-5 mb-4 animate-[fadeUp_0.25s_ease]">
           <div className="text-[9px] tracking-[0.3em] uppercase font-mono font-semibold text-emerald-600 mb-4">
             ALL SOLUTIONS (8-TILE BINGO)
           </div>
 
-          {computing && (
-            <div className="flex items-center gap-3 py-6 justify-center text-stone-400 font-mono text-xs">
-              <span className="inline-block animate-spin text-base">◌</span>
-              Computing…
-            </div>
-          )}
-
-          {!computing && solutions !== null && solutions.length === 0 && (
+          {count === 0 && (
             <p className="text-center text-sm text-stone-400 py-4">No solutions found</p>
           )}
 
-          {!computing && solutions && solutions.length > 0 && (
+          {count > 0 && (
             <div className="space-y-3">
               {solutions.map((sol, idx) => (
                 <div
                   key={idx}
                   className={`rounded-xl border p-3 ${idx === 0 ? 'border-amber-300 bg-amber-50' : 'border-stone-100 bg-stone-50'}`}
                 >
-                  {/* Header row */}
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-mono text-[9px] text-stone-400">#{idx + 1}</span>
                     <div className="flex items-center gap-2">
@@ -307,7 +325,6 @@ export function BingoSolution({ result, revealed, setRevealed }) {
                     </div>
                   </div>
 
-                  {/* Token row */}
                   <div className="flex gap-1.5 overflow-x-auto pb-1 mb-2">
                     {sol.tokens.map((tok, ti) => (
                       <TokenChip
@@ -319,7 +336,6 @@ export function BingoSolution({ result, revealed, setRevealed }) {
                     ))}
                   </div>
 
-                  {/* Equation */}
                   <div className={`px-3 py-2 rounded-lg font-mono text-sm tracking-widest ${
                     idx === 0 ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-700'
                   }`}>
@@ -329,8 +345,8 @@ export function BingoSolution({ result, revealed, setRevealed }) {
               ))}
 
               <p className="text-[10px] text-stone-400 text-center font-mono pt-1">
-                {solutions.length} solution{solutions.length !== 1 ? 's' : ''} found
-                {solutions.length >= 300 ? ' (showing first 300)' : ''}
+                {count} solution{count !== 1 ? 's' : ''} found
+                {count >= 300 ? ' (showing first 300)' : ''}
               </p>
             </div>
           )}
