@@ -573,6 +573,12 @@ export default function App() {
   const totalCount = puzzleList.length;
   const analysis   = currentState?.analysis ?? null;
 
+  const [jumpValue, setJumpValue] = useState(currentIdx + 1);
+
+  useEffect(() => {
+    setJumpValue(currentIdx + 1);
+  }, [currentIdx]);
+
   return (
     <div className="min-h-screen bg-stone-200 pb-20">
       <style>{`
@@ -597,7 +603,9 @@ export default function App() {
 
         {/* ── Puzzle navigation bar ─────────────────────────────────── */}
         {totalCount > 0 && (
-          <div className="flex items-center justify-between mb-4 px-1">
+          <div className="flex items-center justify-between mb-4 px-1 gap-2">
+
+            {/* Prev */}
             <button
               onClick={() => navigateTo(currentIdx - 1)}
               disabled={currentIdx === 0}
@@ -606,28 +614,41 @@ export default function App() {
               ← PREV
             </button>
 
+            {/* Center: jump control */}
             <div className="flex items-center gap-2">
-              <span className="font-mono text-[10px] text-stone-500">
-                {currentIdx + 1} / {totalCount}
+              <input
+                type="number"
+                value={jumpValue}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setJumpValue(val === '' ? '' : Number(val));
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    const v = Number(jumpValue);
+                    if (!isNaN(v)) {
+                      navigateTo(v - 1);
+                    }
+                  }
+                }}
+                onBlur={() => {
+                  const v = Number(jumpValue);
+                  if (!isNaN(v)) {
+                    navigateTo(v - 1);
+                  } else {
+                    setJumpValue(currentIdx + 1);
+                  }
+                }}
+                className="w-14 px-2 py-1 text-center border border-stone-300 rounded-md text-[10px] font-mono"
+                min={1}
+                max={totalCount}
+              />
+              <span className="font-mono text-[10px] text-stone-500 whitespace-nowrap">
+                / {totalCount}
               </span>
-              <div className="flex gap-1">
-                {puzzleList.map((_, i) => {
-                  const st = puzzleStates[i];
-                  const done = st?.submitResult?.correct;
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => navigateTo(i)}
-                      className={`w-5 h-2 rounded-full cursor-pointer transition-colors ${
-                        i === currentIdx ? 'bg-amber-500' :
-                        done ? 'bg-emerald-400' : 'bg-stone-200 hover:bg-stone-300'
-                      }`}
-                    />
-                  );
-                })}
-              </div>
             </div>
 
+            {/* Next */}
             <button
               onClick={() => navigateTo(currentIdx + 1)}
               disabled={currentIdx === totalCount - 1}
@@ -635,6 +656,7 @@ export default function App() {
             >
               NEXT →
             </button>
+
           </div>
         )}
 
