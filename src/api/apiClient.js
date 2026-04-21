@@ -34,7 +34,43 @@ async function request(method, path, body) {
   return data;
 }
 
+async function requestBlob(method, path, body) {
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method,
+    headers: getHeaders(),
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.message || `Request failed: ${res.status}`);
+  }
+  return res.blob();
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 export const api = {
+  export: {
+    pdf: async ({ title, puzzles, withSolution = false, subtitlePrefix }) => {
+      const blob = await requestBlob('POST', '/api/export/pdf', { title, puzzles, withSolution, subtitlePrefix });
+      const filename = `${title.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+      triggerDownload(blob, filename);
+    },
+    docx: async ({ title, puzzles, withSolution = false, subtitlePrefix }) => {
+      const blob = await requestBlob('POST', '/api/export/docx', { title, puzzles, withSolution, subtitlePrefix });
+      const filename = `${title.replace(/[^a-z0-9]/gi, '_')}.docx`;
+      triggerDownload(blob, filename);
+    },
+  },
   tileSets: {
     list:   ()         => request('GET',    '/tile-sets'),
     create: (body)     => request('POST',   '/tile-sets', body),

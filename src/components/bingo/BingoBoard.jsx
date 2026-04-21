@@ -42,7 +42,7 @@ const SLOT_LABEL_COLOR = {
 export function BingoBoard({
   boardSlots, selected, onSlotClick, onEmptySlotClick,
   submitResult, allFilled, onSubmit,
-  timerEnabled = false, timerRunning = false,
+  timerEnabled = false,
   timerMs = 0, puzzleHidden = false,
   onStartTimer,
 }) {
@@ -51,7 +51,7 @@ export function BingoBoard({
 
       {/* ── Header ── */}
       <div className="flex items-center justify-between mb-1.5 gap-2">
-        <span className="text-[10px] font-semibold text-stone-500 uppercase">
+        <span className="text-[10px] font-semibold text-stone-500 uppercase ">
           Board · {boardSlots.length} tiles
         </span>
 

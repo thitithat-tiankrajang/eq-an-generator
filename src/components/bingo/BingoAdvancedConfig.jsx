@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { maxFeasibleOps, maxFeasibleEqs, EQ_MAX } from '@/lib/bingoMath';
 
 const CORE_OPS = ['+', '-', '×', '÷'];
 const CHOICE_OPS = ['+/-', '×/÷'];
@@ -8,7 +9,7 @@ const OP_SYMBOLS = [...CORE_OPS, ...CHOICE_OPS];
 export const DEFAULT_ADV_CFG = {
   operatorCount: { enabled: false, min: 1, max: 3 },
   heavyCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
-  equalCount:    { enabled: false, value: 2 },
+  equalCount:    { enabled: false, min: 1, max: 1 },
   blankCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
   operatorSpec: Object.fromEntries(
     OP_SYMBOLS.map(op => [op, { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 }])
@@ -26,8 +27,8 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
     cfg.heavyCount = [adv.heavyCount.min, adv.heavyCount.max];
   if (adv.blankCount?.enabled)
     cfg.blankCount = [adv.blankCount.min, adv.blankCount.max];
-  if (adv.equalCount.enabled && mode === 'expand')
-    cfg.equalCount = adv.equalCount.value;
+  if (adv.equalCount.enabled)
+    cfg.equalCount = [adv.equalCount.min, adv.equalCount.max];
 
   const opSpec = {};
   const tileAssignmentSpec = {};
@@ -74,6 +75,7 @@ function countActive(adv) {
     adv.operatorCount.enabled,
     adv.heavyCount.enabled,
     adv.blankCount?.enabled,
+    adv.equalCount.enabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].enabled),
   ].filter(Boolean).length + placements;
 }
@@ -195,22 +197,28 @@ function RangeRow({
 
       {/* BOTTOM: controls */}
       {enabled && (
-        <div className="flex items-center justify-between mt-3 gap-10">
-          <NumStepper
-            value={min}
-            onChange={v => onMinChange(Math.min(v, max))}
-            min={minBound}
-            max={maxBound}
-            size="sm"
-          />
-          <span className="text-stone-400 font-bold text-sm">–</span>
-          <NumStepper
-            value={max}
-            onChange={v => onMaxChange(Math.max(v, min))}
-            min={minBound}
-            max={maxBound}
-            size="sm"
-          />
+        <div className="mt-3 bg-white border border-stone-200 rounded-lg px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+        
+            <NumStepper
+              value={min}
+              onChange={v => onMinChange(Math.min(v, max))}
+              min={minBound}
+              max={maxBound}
+              size="sm"
+            />
+        
+            <span className="text-stone-400 font-bold text-sm px-1">–</span>
+        
+            <NumStepper
+              value={max}
+              onChange={v => onMaxChange(Math.max(v, min))}
+              min={minBound}
+              max={maxBound}
+              size="sm"
+            />
+        
+          </div>
         </div>
       )}
     </div>
@@ -385,7 +393,7 @@ function OperatorCard({ op, spec, upd, isCross, maxForOp }) {
 }
 
 // ── AdvancedConfigBody ────────────────────────────────────────────────────────
-function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode }) {
+function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }) {
   const [opExpand, setOpExpand] = useState(false);
   const upd = (path, value) => setAdvancedCfg(prev => deepUpdate(prev, path, value));
   const active = countActive(advancedCfg);
@@ -397,6 +405,12 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode }) {
     const spec = advancedCfg.operatorSpec[op];
     return s + (spec.enabled ? spec.min : 0);
   }, 0);
+
+  // Dynamic max bounds based on totalTile and current settings
+  const curEqMin = advancedCfg.equalCount.enabled ? advancedCfg.equalCount.min : 1;
+  const curOpMin = advancedCfg.operatorCount.enabled ? advancedCfg.operatorCount.min : 0;
+  const dynMaxOps = maxFeasibleOps(totalTile, curEqMin);
+  const dynMaxEqs = Math.min(EQ_MAX, maxFeasibleEqs(totalTile, curOpMin));
 
   return (
     <>
@@ -414,7 +428,7 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode }) {
           max={advancedCfg.operatorCount.max}
           onMinChange={v => upd('operatorCount.min', v)}
           onMaxChange={v => upd('operatorCount.max', v)}
-          minBound={1} maxBound={6}
+          minBound={0} maxBound={dynMaxOps}
         />
 
         {/* Per-operator toggle */}
@@ -529,6 +543,27 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode }) {
         </div>
       </section>
 
+      {/* ── D: Equal Count ── */}
+      <section>
+        <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">
+          D — Equal Sign <span className="text-stone-400 font-normal">(=)</span>
+        </div>
+        <RangeRow
+          label="EQUAL COUNT (=)"
+          enabled={advancedCfg.equalCount.enabled}
+          onToggle={() => upd('equalCount.enabled', !advancedCfg.equalCount.enabled)}
+          min={advancedCfg.equalCount.min}
+          max={advancedCfg.equalCount.max}
+          onMinChange={v => upd('equalCount.min', Math.min(v, advancedCfg.equalCount.max))}
+          onMaxChange={v => upd('equalCount.max', Math.max(v, advancedCfg.equalCount.min))}
+          minBound={1} maxBound={dynMaxEqs}
+        />
+        <div className="mt-1.5 px-1 text-[10px] text-stone-400">
+          จำนวน = ที่เป็นไปได้ขึ้นอยู่กับ totalTile — generator จะแจ้ง error ถ้า config เป็นไปไม่ได้
+        </div>
+      </section>
+    
+
       {/* Reset */}
       {active > 0 && (
         <button
@@ -545,14 +580,14 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode }) {
 }
 
 // ── Main export ───────────────────────────────────────────────────────────────
-export function BingoAdvancedConfig({ advancedCfg, setAdvancedCfg, mode, inline = false }) {
+export function BingoAdvancedConfig({ advancedCfg, setAdvancedCfg, mode, totalTile = 9, inline = false }) {
   const [open, setOpen] = useState(false);
   const active = countActive(advancedCfg);
 
   if (inline) {
     return (
       <div className="space-y-4">
-        <AdvancedConfigBody advancedCfg={advancedCfg} setAdvancedCfg={setAdvancedCfg} mode={mode} />
+        <AdvancedConfigBody advancedCfg={advancedCfg} setAdvancedCfg={setAdvancedCfg} mode={mode} totalTile={totalTile} />
       </div>
     );
   }
@@ -579,7 +614,7 @@ export function BingoAdvancedConfig({ advancedCfg, setAdvancedCfg, mode, inline 
       </button>
       {open && (
         <div className="px-5 pb-5 border-t border-stone-100 space-y-5">
-          <AdvancedConfigBody advancedCfg={advancedCfg} setAdvancedCfg={setAdvancedCfg} mode={mode} />
+          <AdvancedConfigBody advancedCfg={advancedCfg} setAdvancedCfg={setAdvancedCfg} mode={mode} totalTile={totalTile} />
         </div>
       )}
     </div>

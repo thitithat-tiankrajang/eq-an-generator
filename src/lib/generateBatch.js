@@ -48,13 +48,14 @@ export function generateBatchAsync(cfgList, { onEach, onDone, onError }) {
  * @param {object[]} tileSetsCache  - [{ id, tiles }] from API, optional
  * @returns {object[]} cfgList
  */
-export function buildCfgList(puzzleSets, mode, tileSetsCache = []) {
+export function buildCfgList(puzzleSets, mode, tileSetsCache = [], crossBonus = true) {
   const list = [];
   for (const s of puzzleSets) {
     const poolDef = s.tileSetId
       ? (tileSetsCache.find(ts => ts.id === s.tileSetId)?.tiles ?? null)
       : null;
     const cfg = buildGeneratorConfig(mode, s.tileCount, s.advancedCfg ?? DEFAULT_ADV_CFG, poolDef);
+    if (mode === 'cross' && !crossBonus) cfg.noBonus = true;
     for (let i = 0; i < s.count; i++) list.push(cfg);
   }
   return list;

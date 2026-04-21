@@ -136,6 +136,7 @@ export default function PlayAssignment() {
   const [selected, setSelected] = useState(null);
   const [wildPicker, setWildPicker] = useState(null);
   const [submitResult, setSubmitResult] = useState(null);
+  const [puzzleEqCount, setPuzzleEqCount] = useState(1);
 
   // ── Timer (count-up) ─────────────────────────────────────────────────────
   const [timerStarted, setTimerStarted] = useState(false);
@@ -221,6 +222,7 @@ export default function PlayAssignment() {
         rackValues = gen.rackTiles;
         solution   = gen.solutionTiles;
         slotTypes  = gen.boardSlots.map(s => s.slotType ?? 'px1');
+        setPuzzleEqCount(gen.eqCount ?? 1);
         lockedPos  = gen.boardSlots
           .map((slot, i) => (slot.isLocked ? { pos: i, value: slot.tile } : null))
           .filter(Boolean);
@@ -543,7 +545,7 @@ export default function PlayAssignment() {
 
     const tiles = boardSlots.map(s => WILD_TILES.has(s.tile) ? s.resolvedValue : s.tile);
     const eq    = tiles.join('');
-    const valid = isValidEquation(eq, 1, false);
+    const valid = isValidEquation(eq, puzzleEqCount, false);
     const score = valid ? calcScore(boardSlots) : 0;
 
     const elapsed = timerActive ? Date.now() - timerStartRef.current : timerMs;
@@ -577,7 +579,7 @@ export default function PlayAssignment() {
       { eq, timeTaken, isCorrect: valid, score, solutionTiles, timerMs: elapsed },
     ]);
     setPhase('review');
-  }, [boardSlots, rackTiles, timerActive, timerMs, answeredCount, assignmentId, user, solutionTiles, stopTimer]);
+  }, [boardSlots, rackTiles, timerActive, timerMs, answeredCount, assignmentId, user, solutionTiles, stopTimer, puzzleEqCount]);
 
   // ── Next question ─────────────────────────────────────────────────────────
   const handleNext = async () => {

@@ -138,6 +138,7 @@ function SetRow({ set, mode = 'cross', label, onChange, onRemove }) {
               onChange({ advancedCfg: typeof newCfg === 'function' ? newCfg(adv) : newCfg })
             }
             mode={mode}
+            totalTile={tileCount}
             inline
           />
         </div>

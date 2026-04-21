@@ -1,4 +1,4 @@
-import BingoApp from "@/lib/ui";
+import BingoApp from "@/lib/Generator";
 
 export default function PlayPage() {
   return <BingoApp />;

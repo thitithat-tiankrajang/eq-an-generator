@@ -83,6 +83,7 @@ function initPuzzleState(result) {
 export default function App() {
   // ── Config state ─────────────────────────────────────────────────────────
   const [mode,         setMode]         = useState('cross');
+  const [crossBonus,   setCrossBonus]   = useState(true);
   const [puzzleSets,   setPuzzleSets]   = useState(DEFAULT_SETS);
   const [timerEnabled, setTimerEnabled] = useState(false);
 
@@ -148,14 +149,15 @@ export default function App() {
     if (saved.currentIdx != null) setCurrentIdx(saved.currentIdx);
     if (saved.puzzleSets)   setPuzzleSets(saved.puzzleSets);
     if (saved.timerEnabled != null) setTimerEnabled(saved.timerEnabled);
+    if (saved.crossBonus != null)   setCrossBonus(saved.crossBonus);
     if (saved.genCount)     setGenCount(saved.genCount);
   }, []);
 
   // PERSISTENCE — save on state change
   useEffect(() => {
     if (puzzleList.length === 0) return;
-    saveSession({ puzzleList, puzzleStates, currentIdx, puzzleSets, timerEnabled, genCount });
-  }, [puzzleList, puzzleStates, currentIdx, puzzleSets, timerEnabled, genCount]);
+    saveSession({ puzzleList, puzzleStates, currentIdx, puzzleSets, timerEnabled, crossBonus, genCount });
+  }, [puzzleList, puzzleStates, currentIdx, puzzleSets, timerEnabled, crossBonus, genCount]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // PUZZLE STATE UPDATER
@@ -227,7 +229,7 @@ export default function App() {
     setRevealed(false);
     setAnalysisOpen(false);
 
-    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache.current);
+    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache.current, crossBonus);
     setGenProgress({ done: 0, total: cfgList.length });
 
     cancelRef.current = generateBatchAsync(cfgList, {
@@ -249,7 +251,7 @@ export default function App() {
         cancelRef.current = null;
       },
     });
-  }, [mode, puzzleSets, stopTimer]);
+  }, [mode, puzzleSets, stopTimer, crossBonus]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // NAVIGATE
@@ -505,7 +507,7 @@ export default function App() {
 
     const tiles = boardSlots.map(s => WILD_TILES.has(s.tile) ? s.resolvedValue : s.tile);
     const eq    = tiles.join('');
-    const valid = isValidEquation(eq, 1, false);
+    const valid = isValidEquation(eq, currentResult?.eqCount ?? 1, false);
     const score = valid ? calcScore(boardSlots) : 0;
     const elapsed = timerActive ? Date.now() - timerStartRef.current : (currentState?.timeMs ?? timerMs);
 
@@ -529,7 +531,7 @@ export default function App() {
       }));
       if (!valid && timerActive) stopTimer();
     }
-  }, [boardSlots, timerActive, timerMs, currentState, updateCurrentState, currentIdx, puzzleList.length, navigateTo, stopTimer]);
+  }, [boardSlots, timerActive, timerMs, currentState, updateCurrentState, currentIdx, puzzleList.length, navigateTo, stopTimer, currentResult?.eqCount]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // ANALYSIS (admin only)
@@ -585,6 +587,7 @@ export default function App() {
       <div className="max-w-3xl mx-auto px-2 pt-2">
         <BingoConfig
           mode={mode} setMode={setMode}
+          crossBonus={crossBonus} setCrossBonus={setCrossBonus}
           puzzleSets={puzzleSets} setPuzzleSets={setPuzzleSets}
           timerEnabled={timerEnabled} setTimerEnabled={setTimerEnabled}
           onGenerate={generate} loading={loading}

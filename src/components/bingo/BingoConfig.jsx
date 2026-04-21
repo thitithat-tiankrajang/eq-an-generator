@@ -35,6 +35,7 @@ export function BingoConfig({
   onCancel = null,
   showTimer = true,
   mode = 'cross', setMode = () => {},
+  crossBonus = true, setCrossBonus = () => {},
   onTileSetsLoaded = null,
 }) {
   const totalPuzzles = puzzleSets.reduce((s, p) => s + (Number(p.count) || 1), 0);
@@ -91,6 +92,27 @@ export function BingoConfig({
           </button>
         ))}
       </div>
+
+      {/* ── Cross Bonus toggle ── */}
+      {mode === 'cross' && (
+        <div
+          className={`flex items-center justify-between px-4 py-2.5 rounded-xl border-2 cursor-pointer transition-colors select-none mb-5 -mt-2
+            ${crossBonus ? 'border-amber-300 bg-amber-50' : 'border-stone-300 bg-stone-50 hover:border-stone-400'}`}
+          onClick={() => setCrossBonus(v => !v)}
+        >
+          <div>
+            <div className={`text-xs font-bold ${crossBonus ? 'text-amber-800' : 'text-stone-600'}`}>
+              Bonus Slots
+            </div>
+            <div className={`text-[10px] mt-0.5 ${crossBonus ? 'text-amber-600' : 'text-stone-500'}`}>
+              {crossBonus ? 'P×2 / P×3 / E×2 / E×3 enabled' : 'All slots px1 — no point multipliers'}
+            </div>
+          </div>
+          <div className={`w-10 h-6 rounded-full border-2 flex items-center transition-all shrink-0 ${crossBonus ? 'bg-amber-500 border-amber-400 justify-end' : 'bg-stone-200 border-stone-300 justify-start'}`}>
+            <div className="w-4 h-4 rounded-full shadow mx-0.5 bg-white" />
+          </div>
+        </div>
+      )}
 
       {/* ── Puzzle Sets ── */}
       <SectionLabel step="02" label="Puzzle Sets" />
@@ -290,7 +312,7 @@ function SetRow({ set, mode, label, tileSets, onChange, onRemove }) {
           <CountInput value={count} onChange={v => onChange({ count: v })} />
           <button
             type="button"
-            onClick={() => onChange({ count: Math.min(1000, count + 1) })}
+            onClick={() => onChange({ count: Math.min(10000, count + 1) })}
             className="h-11 w-11 rounded-lg border-2 border-stone-300 bg-white text-stone-600 font-bold text-lg hover:border-amber-500 hover:text-amber-600 transition-colors cursor-pointer flex items-center justify-center shrink-0 select-none active:scale-95"
           >+</button>
         </div>
@@ -303,6 +325,7 @@ function SetRow({ set, mode, label, tileSets, onChange, onRemove }) {
             advancedCfg={advCfg}
             setAdvancedCfg={newCfg => onChange({ advancedCfg: typeof newCfg === 'function' ? newCfg(advCfg) : newCfg })}
             mode={mode}
+            totalTile={tileCount}
             inline
           />
         </div>
@@ -329,13 +352,13 @@ function CountInput({ value, onChange }) {
     const str = e.target.value.replace(/\D/g, '');
     setRaw(str);
     const num = parseInt(str, 10);
-    if (!isNaN(num) && num >= 1 && num <= 1000) onChange(num);
+    if (!isNaN(num) && num >= 1 && num <= 10000) onChange(num);
   };
 
   const handleBlur = () => {
     setIsFocused(false);
     const num = parseInt(raw, 10);
-    const clamped = !isNaN(num) ? Math.min(1000, Math.max(1, num)) : value;
+    const clamped = !isNaN(num) ? Math.min(10000, Math.max(1, num)) : value;
     setRaw(String(clamped));
     if (clamped !== value) onChange(clamped);
   };

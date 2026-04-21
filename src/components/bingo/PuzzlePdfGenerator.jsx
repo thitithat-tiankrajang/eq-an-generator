@@ -1,16 +1,18 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { ChevronDown, ChevronUp, Printer, Download, FileText } from 'lucide-react';
 import { BingoConfig, DEFAULT_SETS } from '@/components/bingo/BingoConfig';
 import { generateBatchAsync, buildCfgList } from '@/lib/generateBatch';
 import { TILE_POINTS } from '@/lib/amathTokens';
+import { api } from '@/api/apiClient';
 
 // ─── SLOT DISPLAY (UI text view) ──────────────────────────────────────────────
 const SLOT_DISPLAY = {
   px1:     { label: '__',   cls: 'bg-stone-50 border-stone-200 text-stone-400' },
-  px2:     { label: '×2',   cls: 'bg-orange-50 border-orange-300 text-orange-600 font-semibold' },
-  px3:     { label: '×3',   cls: 'bg-blue-50 border-blue-300 text-blue-600 font-semibold' },
+  px2:     { label: 'P×2',   cls: 'bg-orange-50 border-orange-300 text-orange-600 font-semibold' },
+  px3:     { label: 'P×3',   cls: 'bg-blue-50 border-blue-300 text-blue-600 font-semibold' },
   px3star: { label: '★',    cls: 'bg-sky-50 border-sky-300 text-sky-500 font-bold' },
-  ex2:     { label: 'W×2',  cls: 'bg-yellow-50 border-yellow-300 text-yellow-700 font-semibold' },
-  ex3:     { label: 'W×3',  cls: 'bg-red-50 border-red-300 text-red-600 font-semibold' },
+  ex2:     { label: 'E×2',  cls: 'bg-yellow-50 border-yellow-300 text-yellow-700 font-semibold' },
+  ex3:     { label: 'E×3',  cls: 'bg-red-50 border-red-300 text-red-600 font-semibold' },
 };
 
 // ─── SCORE CALCULATOR (for solution sheet) ────────────────────────────────────
@@ -28,6 +30,24 @@ function computeSolutionScore(puzzle) {
     if (st === 'ex3') wordMult *= 3;
   }
   return letterTotal * wordMult + 40;
+}
+
+// ─── EXPORT PAYLOAD TRIMMER ───────────────────────────────────────────────────
+// Strips generator-only fields (board 15×15, tileCounts, placement coords, etc.)
+// before sending to the backend export API, keeping only what PDF/DOCX need.
+function toExportPuzzle(p) {
+  return {
+    boardSlots: p.boardSlots.map(s => ({
+      tile: s.tile,
+      isLocked: s.isLocked,
+      slotType: s.slotType ?? 'px1',
+      resolvedValue: s.resolvedValue ?? undefined,
+    })),
+    rackTiles: p.rackTiles,
+    equation: p.equation,
+    solutionTiles: p.solutionTiles,
+    noBonus: p.noBonus ?? undefined,
+  };
 }
 
 // ─── SORT RACK ────────────────────────────────────────────────────────────────
@@ -160,15 +180,20 @@ function SlotChip({ slot }) {
   );
 }
 
+function hasBonus(puzzle) {
+  return puzzle.boardSlots?.some(s => !s.isLocked && s.slotType && s.slotType !== 'px1') ?? false;
+}
+
 function TextPuzzleRow({ puzzle, index, showSolution }) {
   const rack = sortRack(puzzle.rackTiles);
-  const score = showSolution ? computeSolutionScore(puzzle) : null;
+  const score = showSolution && hasBonus(puzzle) ? computeSolutionScore(puzzle) : null;
   return (
     <div className="font-mono text-xs leading-relaxed">
       <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5">
-        <span className="text-stone-400 mr-1 shrink-0">{index + 1}.</span>
+        <span className="text-stone-500 font-bold mr-0.5 shrink-0">{index + 1}.</span>
+        <span className="text-stone-400 font-semibold shrink-0">E:</span>
         {puzzle.boardSlots.map((s, i) => <SlotChip key={i} slot={s} />)}
-        <span className="text-stone-400 mx-1 shrink-0">rack:</span>
+        <span className="text-stone-400 font-semibold mx-1 shrink-0">P:</span>
         {rack.map((t, i) => (
           <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded border border-stone-200 bg-white text-stone-700 text-[11px] font-mono mr-0.5">
             {t}
@@ -184,90 +209,160 @@ function TextPuzzleRow({ puzzle, index, showSolution }) {
   );
 }
 
-// ─── PDF BUILDER ──────────────────────────────────────────────────────────────
+// ─── PLAIN TEXT GENERATOR (for copy) ─────────────────────────────────────────
 
-function tileHtml(value, cls, extraLabel = '') {
-  const pt = TILE_POINTS[value];
-  const ptBadge = pt != null ? `<span class="tp">${pt}</span>` : '';
-  return `<span class="tile ${cls}"><span class="tv">${value}</span>${ptBadge}${extraLabel}</span>`;
+const SLOT_TEXT = {
+  px1:     '__',
+  px2:     '[P×2]',
+  px3:     '[P×3]',
+  px3star: '[★]',
+  ex2:     '[E×2]',
+  ex3:     '[E×3]',
+};
+
+function buildPlainText(puzzles, showSolution) {
+  return puzzles.map((p, i) => {
+    const boardStr = p.boardSlots.map(s => {
+      if (s.isLocked) return s.resolvedValue ?? s.tile;
+      return SLOT_TEXT[s.slotType ?? 'px1'];
+    }).join(' ');
+    const rackStr = sortRack(p.rackTiles).join(' ');
+    let line = `${i + 1}. E: ${boardStr}  P: ${rackStr}`;
+    if (showSolution && p.equation) {
+      const score = hasBonus(p) ? computeSolutionScore(p) : null;
+      line += `\n   → ${p.equation}${score != null ? ` (${score}pts)` : ''}`;
+    }
+    return line;
+  }).join('\n');
 }
 
-function buildPrintHtml({ puzzles, title, colorMode, includeSolution = false }) {
-  const PAGE_SIZE = 26;
-  const PER_COL = Math.ceil(PAGE_SIZE / 2); // 13
+// ─── PDF BUILDER ──────────────────────────────────────────────────────────────
+
+function buildPrintHtml({ puzzles, title, withSolution = true, subtitlePrefix = 'Bingo Generator' }) {
+  const PAGE_SIZE = 20;
+  const PER_COL = 10;
+  const SOL_PER_PAGE = 100;
+
+  let pageCounter = 1;
+
+  const renderTileInner = (value) => {
+    const pt = TILE_POINTS[value];
+    const ptBadge = pt != null ? `<span class="tp">${pt}</span>` : '';
+    return `<span class="tv">${value}</span>${ptBadge}`;
+  };
+
+  const SLOT_LABELS = {
+    px1: '',
+    px2: 'P×2',
+    px3: 'P×3',
+    px3star: '★',
+    ex2: 'E×2',
+    ex3: 'E×3',
+  };
 
   const makePuzzleBlock = (p, i) => {
+    const tileCount = Math.max(p.boardSlots.length, p.rackTiles.length);
+    const sizeClass = tileCount <= 12 ? 'sz-lg' : 'sz-sm';
+
     const board = p.boardSlots.map(s => {
-      if (s.isLocked) return tileHtml(s.resolvedValue ?? s.tile, 'locked');
+      if (s.isLocked) {
+        return `<span class="tile locked ${sizeClass}">${renderTileInner(s.resolvedValue ?? s.tile, sizeClass)}</span>`;
+      }
       const st = s.slotType ?? 'px1';
-      let label = '';
-      if (st === 'px3star') label = `<span class="slot-label star">★</span>`;
-      else if (st !== 'px1') label = `<span class="slot-label">${st}</span>`;
-      return `<span class="tile empty ${st}">${label}</span>`;
+      const label = SLOT_LABELS[st] || '';
+      const specialClass = st !== 'px1' ? ' special' : '';
+      return `<span class="tile empty${specialClass} ${sizeClass}">${label ? `<span class="sl">${label}</span>` : ''}</span>`;
     }).join('');
 
     const rack = sortRack(p.rackTiles)
-      .map(t => tileHtml(t, 'given'))
+      .map(t => `<span class="tile rack ${sizeClass}">${renderTileInner(t, sizeClass)}</span>`)
       .join('');
 
-    const solutionLine = includeSolution && p.equation
-      ? `<div class="sol">→ ${p.equation}${p.solutionScore != null ? `  (${p.solutionScore}pts)` : ''}</div>`
-      : '';
-
     return `
-<div class="puzzle">
-  <div class="row"><div class="idx">#${i + 1}</div><div class="line">${board}</div></div>
-  <div class="row"><div class="idx">R</div><div class="line">${rack}</div></div>
-  ${includeSolution ? solutionLine : '<div class="ans">Point: ______ </div>'}
+<div class="q">
+  <div class="qnum">${i + 1}</div>
+  <div class="qbody">
+    <div class="row"><span class="rlabel">B</span><div class="tiles">${board}</div></div>
+    <div class="row"><span class="rlabel">R</span><div class="tiles">${rack}</div></div>
+    ${p.noBonus ? '' : '<div class="ans">Pts: ________</div>'}
+  </div>
 </div>`;
   };
 
-  const pages = [];
+  // ─── QUESTION PAGES ─────────────────────
+  const questionPages = [];
   for (let i = 0; i < puzzles.length; i += PAGE_SIZE) {
-    pages.push(puzzles.slice(i, i + PAGE_SIZE));
+    questionPages.push(puzzles.slice(i, i + PAGE_SIZE));
   }
 
-  const pagesHtml = pages.map((page, pi) => {
+  const questionHtml = questionPages.map((page, pi) => {
     const left = page.slice(0, PER_COL);
     const right = page.slice(PER_COL, PAGE_SIZE);
     const offset = pi * PAGE_SIZE;
+
     const leftHtml = left.map((p, i) => makePuzzleBlock(p, offset + i)).join('');
     const rightHtml = right.map((p, i) => makePuzzleBlock(p, offset + PER_COL + i)).join('');
-    const isLast = pi === pages.length - 1;
+
+    const isFirst = pi === 0;
+
     return `
-<div class="page${isLast ? '' : ' page-break'}">
-  ${pi === 0 ? `<h1>${title}</h1><div class="sub">A-MATH BINGO · ${puzzles.length} QUESTIONS</div>` : ''}
+<div class="page${pi !== 0 ? ' page-break' : ''}">
+  ${isFirst ? `
+  <div class="header">
+    <div class="header-left">
+      <div class="title">${title}</div>
+      <div class="subtitle">${subtitlePrefix} · ${puzzles.length} Questions</div>
+    </div>
+    <div class="header-right">
+      <div class="field">Name: ______________________</div>
+      <div class="field">Date: _____ / _____ / _____</div>
+    </div>
+  </div>` : `
+  <div class="header">
+    <div class="header-left">
+      <div class="title-cont">${title} <span class="cont-label">(cont.)</span></div>
+    </div>
+    <div class="header-right"></div>
+  </div>`}
+  <div class="rule"></div>
   <div class="grid">
     <div class="col">${leftHtml}</div>
+    <div class="col-sep"></div>
     <div class="col">${rightHtml}</div>
   </div>
+  <div class="pagenum">— ${pageCounter++} —</div>
 </div>`;
   }).join('');
 
-  const colorCss = colorMode ? `
-/* ── Color mode ── */
-/* locked: always dark border + dark text */
-.tile.locked { background: #ebebeb; color: #000; border: 1.5px solid #000; }
-.tile.locked .tp { color: #555; }
-/* rack */
-.tile.given  { background: #fefce8; color: #1c1917; border: 1px solid #a16207; }
-.tile.given .tp  { color: #92400e; }
-/* px2 = orange */
-.tile.empty.px2 { border: 1.5px dashed #f97316; background: #fff7ed; }
-.tile.empty.px2 .slot-label { color: #fdba74; }
-/* px3 = blue */
-.tile.empty.px3 { border: 1.5px dashed #3b82f6; background: #eff6ff; }
-.tile.empty.px3 .slot-label { color: #93c5fd; }
-/* px3star = blue + star */
-.tile.empty.px3star { border: 1.5px dashed #3b82f6; background: #eff6ff; }
-.tile.empty.px3star .slot-label.star { color: #93c5fd; font-size: 13px; opacity: 0.35; }
-/* ex2 = yellow */
-.tile.empty.ex2 { border: 1.5px dashed #eab308; background: #fefce8; }
-.tile.empty.ex2 .slot-label { color: #fde047; }
-/* ex3 = red */
-.tile.empty.ex3 { border: 1.5px dashed #ef4444; background: #fff5f5; }
-.tile.empty.ex3 .slot-label { color: #fca5a5; }
-` : '';
+  // ─── SOLUTION PAGES (only when withSolution) ─────────────────────
+  let solutionHtml = '';
+  if (withSolution) {
+    const solutionPages = [];
+    for (let i = 0; i < puzzles.length; i += SOL_PER_PAGE) {
+      solutionPages.push(puzzles.slice(i, i + SOL_PER_PAGE));
+    }
+    solutionHtml = solutionPages.map((page, pi) => {
+      const items = page.map((p, i) => {
+        const idx = pi * SOL_PER_PAGE + i + 1;
+        const score = hasBonus(p) ? computeSolutionScore(p) : null;
+        const scoreStr = score != null ? ` (${score}pts)` : '';
+        return `<div class="sol-item"><span class="sol-num">${idx}.</span> ${p.equation || '—'}${scoreStr}</div>`;
+      }).join('');
+      return `
+<div class="page page-break">
+  <div class="header">
+    <div class="header-left">
+      <div class="title">Answer Key</div>
+      <div class="subtitle">${title}</div>
+    </div>
+    <div class="header-right"></div>
+  </div>
+  <div class="rule"></div>
+  <div class="sol-grid">${items}</div>
+  <div class="pagenum">— ${pageCounter++} —</div>
+</div>`;
+    }).join('');
+  }
 
   return `<!DOCTYPE html>
 <html>
@@ -275,55 +370,241 @@ function buildPrintHtml({ puzzles, title, colorMode, includeSolution = false }) 
 <meta charset="utf-8"/>
 <title>${title}</title>
 <style>
-@page { size: A4; margin: 10mm 12mm; }
-body { width: 186mm; font-family: monospace; }
-h1 { font-size: 14px; margin-bottom: 2px; }
-.sub { font-size: 10px; margin-bottom: 6px; color: #666; }
-.page-break { page-break-before: always; }
-.grid { display: grid; grid-template-columns: 1fr 1fr; column-gap: 8mm; }
-.col { display: flex; flex-direction: column; gap: 4px; }
-.puzzle { border-bottom: 1px solid #ddd; padding-bottom: 4px; break-inside: avoid; }
-.row { display: flex; align-items: center; gap: 3px; margin-bottom: 3px; }
-.idx { width: 20px; font-size: 10px; font-weight: bold; color: #555; flex-shrink: 0; }
-.line { display: flex; gap: 2.5px; flex-wrap: wrap; }
+/* ═══════════════════════════════════════════
+   A-MATH BINGO — PRINT STYLESHEET
+   20 questions/page · 2 columns · 10 per col
+   ═══════════════════════════════════════════ */
 
-/* ── Base tile ── */
-.tile {
-  width: 24px; height: 24px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1.5px solid #444;
+@page {
+  size: A4;
+  margin: 8mm 10mm 10mm 10mm;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Courier New', Courier, monospace;
+  color: #000;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+/* ─── PAGE ─── */
+.page {
+  width: 190mm;
+  height: 275mm;
   position: relative;
+  overflow: hidden;
+}
+.page-break { page-break-before: always; }
+
+/* ─── HEADER ─── */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding-bottom: 1.5mm;
+}
+.title {
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.title-cont {
+  font-size: 12px;
+  font-weight: 700;
+}
+.cont-label {
+  font-weight: 400;
+  font-size: 9px;
+  color: #666;
+}
+.subtitle {
+  font-size: 8px;
+  color: #555;
+  margin-top: 1px;
+  letter-spacing: 1px;
+}
+.header-right { text-align: right; }
+.field {
+  font-size: 8px;
+  color: #333;
+  margin-bottom: 1px;
+}
+.rule {
+  border-top: 1.5px solid #000;
+  margin-bottom: 2mm;
+}
+
+/* ─── GRID ─── */
+.grid {
+  display: flex;
+  gap: 0;
+  height: 256mm;
+}
+.col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+.col-sep {
+  width: 0;
+  border-left: 0.5px solid #ccc;
+  margin: 0 2.5mm;
+}
+
+/* ─── QUESTION BLOCK ─── */
+.q {
+  display: flex;
+  gap: 1.5mm;
+  border-bottom: 0.5px solid #ddd;
+  flex: 1;
+  /* key: align qnum to center vertically with the content */
+  align-items: center;
+}
+.q:last-child { border-bottom: none; }
+
+.qnum {
+  width: 16px;
+  font-size: 11px;
+  font-weight: 900;
+  text-align: right;
+  color: #000;
   flex-shrink: 0;
-  box-sizing: border-box;
 }
-.tv { font-size: 11px; font-weight: 800; line-height: 1; }
+
+.qbody {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* spacing between B, R, Pts */
+  gap: 3px;
+}
+
+/* ─── ROW (board / rack) ─── */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: nowrap;
+}
+.rlabel {
+  font-size: 7px;
+  font-weight: 700;
+  color: #999;
+  width: 8px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.tiles {
+  display: flex;
+  gap: 1.5px;
+  flex-wrap: nowrap; /* CRITICAL: single line only */
+}
+
+/* ─── TILE SIZES ─── */
+/* Large: ≤12 tiles — maximized for readability */
+.tile.sz-lg {
+  width: 24px;
+  height: 24px;
+}
+.tile.sz-lg .tv { font-size: 11px; }
+.tile.sz-lg .tp { font-size: 5.5px; }
+.tile.sz-lg .sl { font-size: 6px; }
+
+/* Small: 13–15 tiles — compact but still legible */
+.tile.sz-sm {
+  width: 18px;
+  height: 18px;
+}
+.tile.sz-sm .tv { font-size: 9px; }
+.tile.sz-sm .tp { font-size: 4.5px; }
+.tile.sz-sm .sl { font-size: 5px; }
+
+/* ─── TILE BASE ─── */
+.tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tile.locked {
+  border: 1.5px solid #000;
+  background: #e0e0e0;
+}
+.tile.empty {
+  border: 1px dashed #aaa;
+  background: #fff;
+}
+.tile.empty.special {
+  border: 1.5px dashed #555;
+}
+.tile.rack {
+  border: 1px solid #888;
+  background: #fff;
+}
+
+.tv { font-weight: 800; }
 .tp {
-  position: absolute; bottom: 1px; right: 1.5px;
-  font-size: 5px; font-weight: 700; line-height: 1; color: #888;
+  position: absolute;
+  bottom: 0px;
+  right: 1px;
+  font-weight: 700;
+  color: #777;
+}
+.sl {
+  font-weight: 700;
+  color: #666;
 }
 
-/* ── BW defaults ── */
-.tile.locked { border: 1.5px solid #000; background: #f0f0f0; color: #000; }
-.tile.given  { border: 1px solid #888; background: #fff; color: #000; }
-.tile.empty { border: 1px dashed #c0c0c0; background: #fafafa; }
-.tile.empty.px2,
-.tile.empty.px3,
-.tile.empty.px3star { border: 1.5px dashed #bbb; background: #f4f4f4; }
-.tile.empty.ex2,
-.tile.empty.ex3 { border: 1.5px dashed #bbb; background: #f4f4f4; }
-.slot-label {
-  font-size: 7px; font-weight: 700; color: #ddd;
-  letter-spacing: -0.3px; line-height: 1; font-family: monospace;
+/* ─── ANSWER LINE ─── */
+.ans {
+  font-size: 7px;
+  color: #999;
+  margin-left: 10px;
+  margin-top: 10px;
+  letter-spacing: 0.5px;
 }
-.slot-label.star { font-size: 13px; opacity: 0.15; }
-.ans { font-size: 9px; color: #888; margin-left: 23px; margin-top: 1px; }
-.sol { font-size: 8.5px; color: #16a34a; margin-left: 23px; margin-top: 1px; font-weight: 600; }
 
-${colorCss}
+/* ─── PAGE NUMBER ─── */
+.pagenum {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 8px;
+  color: #999;
+}
+
+/* ─── SOLUTIONS ─── */
+.sol-grid {
+  columns: 2;
+  column-gap: 8mm;
+  font-size: 9px;
+  line-height: 1.8;
+}
+.sol-item { break-inside: avoid; }
+.sol-num {
+  display: inline-block;
+  width: 24px;
+  text-align: right;
+  font-weight: 700;
+  margin-right: 4px;
+}
+
 </style>
 </head>
 <body>
-${pagesHtml}
+${questionHtml}
+${solutionHtml}
 </body>
 </html>`;
 }
@@ -333,23 +614,27 @@ ${pagesHtml}
 export function PuzzlePdfGenerator() {
   const [puzzleSets, setPuzzleSets] = useState(DEFAULT_SETS);
   const [mode, setMode] = useState('cross');
+  const [crossBonus, setCrossBonus] = useState(true);
   const [puzzles, setPuzzles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [genCount, setGenCount] = useState(0);
   const [genProgress, setGenProgress] = useState(null);
   const [pdfTitle, setPdfTitle] = useState('A-MATH Bingo Sheet');
-  const [pdfColorMode, setPdfColorMode] = useState(false);
+  const [subtitlePrefix, setSubtitlePrefix] = useState('Bingo Generator');
   const [tileSetsCache, setTileSetsCache] = useState([]);
 
   // Text output / typewriter
   const [revealedCount, setRevealedCount] = useState(0);
   const [isTyping, setIsTyping] = useState(false);
   const [showTextSolution, setShowTextSolution] = useState(false);
+  const [copied, setCopied] = useState(false);
   const typingRef = useRef(null);
 
   // Puzzle list panel
   const [showPuzzleList, setShowPuzzleList] = useState(false);
+
+  const [downloading, setDownloading] = useState(null); // 'pdf' | 'pdf-sol' | 'docx' | null
 
   const cancelRef = useRef(null);
 
@@ -372,7 +657,7 @@ export function PuzzlePdfGenerator() {
     setShowPuzzleList(false);
     setGenProgress({ done: 0, total: puzzleSets.reduce((s, p) => s + p.count, 0) });
 
-    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache);
+    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache, crossBonus);
 
     cancelRef.current = generateBatchAsync(cfgList, {
       onEach: (result, done, total) => {
@@ -392,7 +677,7 @@ export function PuzzlePdfGenerator() {
         cancelRef.current = null;
       },
     });
-  }, [puzzleSets, mode, tileSetsCache]);
+  }, [puzzleSets, mode, tileSetsCache, crossBonus]);
 
   const handleStartTypewriter = useCallback(() => {
     clearInterval(typingRef.current);
@@ -409,21 +694,64 @@ export function PuzzlePdfGenerator() {
     }, 60);
   }, [puzzles.length]);
 
+  const handleStopTypewriter = useCallback(() => {
+    clearInterval(typingRef.current);
+    setIsTyping(false);
+  }, []);
+
+  const handleContinueTypewriter = useCallback(() => {
+    setIsTyping(true);
+    let count = revealedCount;
+    typingRef.current = setInterval(() => {
+      count++;
+      setRevealedCount(count);
+      if (count >= puzzles.length) {
+        clearInterval(typingRef.current);
+        setIsTyping(false);
+      }
+    }, 60);
+  }, [revealedCount, puzzles.length]);
+
   const handlePdf = useCallback((withSolution) => {
-    const puzzlesWithScore = withSolution
-      ? puzzles.map(p => ({ ...p, solutionScore: computeSolutionScore(p) }))
-      : puzzles;
-    const html = buildPrintHtml({ puzzles: puzzlesWithScore, title: pdfTitle, colorMode: pdfColorMode, includeSolution: withSolution });
+    const html = buildPrintHtml({ puzzles, title: pdfTitle, withSolution, subtitlePrefix });
     const win = window.open('', '_blank');
     if (!win) return;
     win.document.write(html);
     win.document.close();
     win.focus();
     setTimeout(() => win.print(), 300);
-  }, [puzzles, pdfTitle, pdfColorMode]);
+  }, [puzzles, pdfTitle, subtitlePrefix]);
+
+  const handleDownloadPdf = useCallback(async (withSolution) => {
+    const key = withSolution ? 'pdf-sol' : 'pdf';
+    if (downloading) return;
+    setDownloading(key);
+    try {
+      await api.export.pdf({ title: pdfTitle, puzzles: puzzles.map(toExportPuzzle), withSolution, subtitlePrefix });
+    } catch (err) {
+      console.error('PDF download failed:', err);
+      alert(`PDF download failed: ${err.message}`);
+    } finally {
+      setDownloading(null);
+    }
+  }, [puzzles, pdfTitle, subtitlePrefix, downloading]);
+
+  const handleDownloadDocx = useCallback(async (withSolution) => {
+    const key = withSolution ? 'docx-sol' : 'docx';
+    if (downloading) return;
+    setDownloading(key);
+    try {
+      await api.export.docx({ title: pdfTitle, puzzles: puzzles.map(toExportPuzzle), withSolution, subtitlePrefix });
+    } catch (err) {
+      console.error('DOCX download failed:', err);
+      alert(`DOCX download failed: ${err.message}`);
+    } finally {
+      setDownloading(null);
+    }
+  }, [puzzles, pdfTitle, subtitlePrefix, downloading]);
 
   return (
-    <div className="space-y-4 max-w-3xl mx-auto p-4">
+    <div className="space-y-4 max-w-3xl mx-auto">
 
       <BingoConfig
         puzzleSets={puzzleSets}
@@ -437,74 +765,188 @@ export function PuzzlePdfGenerator() {
         showTimer={false}
         mode={mode}
         setMode={setMode}
+        crossBonus={crossBonus}
+        setCrossBonus={setCrossBonus}
         onTileSetsLoaded={setTileSetsCache}
       />
 
       {puzzles.length > 0 && (
         <div className="space-y-3">
 
-          {/* ── PDF Controls ── */}
-          <div className="bg-white rounded-xl border border-stone-200 p-3 space-y-2">
-            <input
-              type="text"
-              value={pdfTitle}
-              onChange={e => setPdfTitle(e.target.value)}
-              placeholder="ชื่อ PDF"
-              className="w-full text-sm border border-gray-200 rounded-lg px-3 py-2 bg-white"
-            />
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={() => setPdfColorMode(v => !v)}
-                className={`px-3 py-2 rounded-lg text-sm font-semibold cursor-pointer border transition-colors ${
-                  pdfColorMode ? 'bg-violet-100 border-violet-400 text-violet-700' : 'bg-gray-100 border-gray-300 text-gray-600'
-                }`}
-              >
-                {pdfColorMode ? 'สี' : 'ขาวดำ'}
-              </button>
-              <button
-                onClick={() => handlePdf(false)}
-                className="flex-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold cursor-pointer border-none"
-              >
-                พิมพ์โจทย์ ({puzzles.length})
-              </button>
-              <button
-                onClick={() => handlePdf(true)}
-                className="flex-1 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-sm font-semibold cursor-pointer border-none"
-              >
-                พิมพ์ + เฉลย
-              </button>
+          {/* Export Controls */}
+          <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
+
+            {/* Document title + subtitle */}
+            <div className="p-4 pb-3 space-y-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
+                  Document Title
+                </label>
+                <input
+                  type="text"
+                  value={pdfTitle}
+                  onChange={e => setPdfTitle(e.target.value)}
+                  placeholder="Enter document title"
+                  className="w-full text-sm border border-stone-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-1.5">
+                  Subtitle Prefix
+                  <span className="ml-1.5 font-normal normal-case tracking-normal text-stone-300">
+                    — shown as &quot;{subtitlePrefix || 'Bingo Generator'} · N Questions&quot;
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={subtitlePrefix}
+                  onChange={e => setSubtitlePrefix(e.target.value)}
+                  placeholder="Bingo Generator"
+                  className="w-full text-sm border border-stone-200 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-amber-300 focus:border-amber-400 transition-all"
+                />
+              </div>
+            </div>
+
+            {/* Print via browser */}
+            <div className="px-4 pb-3">
+              <p className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-2">
+                Print via Browser
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handlePdf(false)}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100 hover:border-stone-300 transition-colors cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5 shrink-0" />
+                  <span>Questions Only</span>
+                </button>
+                <button
+                  onClick={() => handlePdf(true)}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-200 bg-stone-50 text-stone-700 hover:bg-stone-100 hover:border-stone-300 transition-colors cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5 shrink-0" />
+                  <span>Questions + Answer Key</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Download file */}
+            <div className="border-t border-stone-100 px-4 py-3">
+              <p className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider mb-2">
+                Download File
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => handleDownloadPdf(false)}
+                  disabled={!!downloading}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-40 disabled:cursor-wait transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>{downloading === 'pdf' ? 'Generating...' : 'PDF — Questions'}</span>
+                </button>
+                <button
+                  onClick={() => handleDownloadPdf(true)}
+                  disabled={!!downloading}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-40 disabled:cursor-wait transition-colors cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>{downloading === 'pdf-sol' ? 'Generating...' : 'PDF + Answer Key'}</span>
+                </button>
+                <button
+                  onClick={() => handleDownloadDocx(false)}
+                  disabled={!!downloading}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-200 bg-white hover:bg-stone-50 text-stone-700 disabled:opacity-40 disabled:cursor-wait transition-colors cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 shrink-0" />
+                  <span>{downloading === 'docx' ? 'Generating...' : 'Word — Questions'}</span>
+                </button>
+                <button
+                  onClick={() => handleDownloadDocx(true)}
+                  disabled={!!downloading}
+                  className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-sm font-semibold border border-stone-200 bg-white hover:bg-stone-50 text-stone-700 disabled:opacity-40 disabled:cursor-wait transition-colors cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 shrink-0" />
+                  <span>{downloading === 'docx-sol' ? 'Generating...' : 'Word + Answer Key'}</span>
+                </button>
+              </div>
+              <p className="mt-2.5 text-[10px] text-stone-400">
+                {puzzles.length} puzzle{puzzles.length !== 1 ? 's' : ''} ready to export
+              </p>
             </div>
           </div>
 
-          {/* ── Text Output (typewriter) ── */}
+          {/* Text Preview */}
           <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-            <div className="flex items-center justify-between px-3 py-2 bg-stone-50 border-b border-stone-100">
+            <div className="flex items-center justify-between px-4 py-2.5 bg-stone-50 border-b border-stone-100">
               <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-stone-600">Text Output</span>
+                <span className="text-xs font-semibold text-stone-600">Text Preview</span>
                 {revealedCount > 0 && !isTyping && (
-                  <span className="text-[10px] text-stone-400">{revealedCount} ข้อ</span>
+                  <span className="text-[10px] text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full">
+                    {revealedCount} of {puzzles.length}
+                  </span>
                 )}
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setShowTextSolution(v => !v)}
-                  className={`px-2 py-1 rounded text-[11px] font-semibold border cursor-pointer transition-colors ${
-                    showTextSolution ? 'bg-emerald-100 border-emerald-400 text-emerald-700' : 'bg-stone-100 border-stone-300 text-stone-500'
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors ${
+                    showTextSolution
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                      : 'bg-white border-stone-200 text-stone-500 hover:bg-stone-50'
                   }`}
                 >
-                  {showTextSolution ? '+ เฉลย' : 'โจทย์อย่างเดียว'}
+                  {showTextSolution ? 'With Answer' : 'Questions Only'}
                 </button>
-                <button
-                  onClick={handleStartTypewriter}
-                  disabled={isTyping}
-                  className="px-3 py-1 rounded-lg text-[11px] font-semibold border cursor-pointer bg-amber-500 border-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-wait transition-colors"
-                >
-                  {isTyping ? '⏳ กำลังสร้าง…' : revealedCount > 0 ? '↺ สร้างใหม่' : '▶ สร้าง Text'}
-                </button>
+                {revealedCount > 0 && !isTyping && (
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(buildPlainText(puzzles.slice(0, revealedCount), showTextSolution));
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer transition-colors ${
+                      copied
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                        : 'bg-white border-stone-200 text-stone-600 hover:bg-stone-50'
+                    }`}
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                )}
+                {isTyping ? (
+                  <button
+                    onClick={handleStopTypewriter}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer bg-stone-600 border-stone-600 text-white hover:bg-stone-700 transition-colors"
+                  >
+                    Stop
+                  </button>
+                ) : revealedCount > 0 && revealedCount < puzzles.length ? (
+                  <>
+                    <button
+                      onClick={handleContinueTypewriter}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer bg-amber-500 border-amber-500 text-white hover:bg-amber-600 transition-colors"
+                    >
+                      Continue
+                    </button>
+                    <button
+                      onClick={handleStartTypewriter}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer bg-white border-stone-200 text-stone-600 hover:bg-stone-50 transition-colors"
+                    >
+                      Restart
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={handleStartTypewriter}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold border cursor-pointer bg-amber-500 border-amber-500 text-white hover:bg-amber-600 transition-colors"
+                  >
+                    {revealedCount >= puzzles.length ? 'Regenerate' : 'Generate'}
+                  </button>
+                )}
               </div>
             </div>
 
-            {revealedCount > 0 && (
+            {revealedCount > 0 ? (
               <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
                 {puzzles.slice(0, revealedCount).map((p, i) => (
                   <TextPuzzleRow key={i} puzzle={p} index={i} showSolution={showTextSolution} />
@@ -513,19 +955,27 @@ export function PuzzlePdfGenerator() {
                   <span className="inline-block w-1.5 h-4 bg-amber-400 animate-pulse rounded-sm" />
                 )}
               </div>
+            ) : (
+              <div className="px-4 py-6 text-center text-sm text-stone-400">
+                Click Generate to preview puzzles as plain text
+              </div>
             )}
           </div>
 
-          {/* ── Puzzle List (collapsible) ── */}
+          {/* Puzzle Preview (collapsible) */}
           <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
             <button
               onClick={() => setShowPuzzleList(v => !v)}
-              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-stone-50 transition-colors cursor-pointer"
+              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-stone-50 active:bg-stone-100 transition-colors cursor-pointer"
             >
               <span className="text-sm font-semibold text-stone-700">
-                ดูโจทย์ทั้งหมด ({puzzles.length} ข้อ)
+                Puzzle Preview
+                <span className="ml-1.5 text-stone-400 font-normal text-xs">({puzzles.length})</span>
               </span>
-              <span className="text-stone-400 text-sm">{showPuzzleList ? '▲' : '▼'}</span>
+              {showPuzzleList
+                ? <ChevronUp className="w-4 h-4 text-stone-400" />
+                : <ChevronDown className="w-4 h-4 text-stone-400" />
+              }
             </button>
             {showPuzzleList && (
               <div className="border-t border-stone-100 p-3 space-y-2">

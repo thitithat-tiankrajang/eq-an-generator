@@ -1,12 +1,13 @@
 import { useState, useEffect } from "react";
 import { api } from "@/api/apiClient";
-import { Users, Shield, CheckCircle2, XCircle, Clock, FileText } from "lucide-react";
+import { Users, Shield, CheckCircle2, XCircle, Clock, FileText, FlaskConical } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { PuzzlePdfGenerator } from "@/components/bingo/PuzzlePdfGenerator";
+import { GeneratorAnalysis } from "@/components/bingo/GeneratorAnalysis";
 
 export default function AdminPanel() {
   const [users, setUsers] = useState([]);
@@ -106,7 +107,10 @@ export default function AdminPanel() {
             </TabsTrigger>
             <TabsTrigger value="users">All Students</TabsTrigger>
             <TabsTrigger value="pdf" className="flex items-center gap-1.5">
-              <FileText className="w-3.5 h-3.5" /> Puzzle PDF
+              <FileText className="w-3.5 h-3.5" /> Generate File
+            </TabsTrigger>
+            <TabsTrigger value="analysis" className="flex items-center gap-1.5">
+              <FlaskConical className="w-3.5 h-3.5" /> Generator Test
             </TabsTrigger>
           </TabsList>
 
@@ -202,6 +206,11 @@ export default function AdminPanel() {
               </p>
             </div>
             <PuzzlePdfGenerator />
+          </TabsContent>
+
+          {/* Generator Analysis */}
+          <TabsContent value="analysis" className="mt-4">
+            <GeneratorAnalysis />
           </TabsContent>
         </Tabs>
       </div>

@@ -1,56 +1,69 @@
 // ================================================================
-//  A-MATH BINGO GENERATOR  v5
+//  A-MATH BINGO GENERATOR  v6.2  — orchestrator
 //
-//  v3 pipeline:
-//    random tiles → DFS find equation → retry
-//
-//  v5 pipeline:
-//    Equation Constructor
-//          ↓
-//    Tile Composition Builder
-//          ↓
-//    Weighted Tile Expansion
-//          ↓
-//    DFS Validator (existing solver)
-//          ↓
-//    Board Layout Optimizer
-//          ↓
-//    Difficulty Analyzer
-//
-//  Note:
-//  - The DFS solver is preserved and used strictly as a validator.
-//  - The generator remains a single JS module runnable in Node/browser.
+//  This file is responsible for the top-level generation pipeline.
+//  All equation construction, DFS solving, board building, mutation,
+//  and config validation live in their respective modules.
 // ================================================================
 
-// ─── Shared board constants (imported to avoid circular dependency) ───────────
+// ─── Math utilities & tile helpers ────────────────────────────────────────────
 import {
-  OPS_SET        as _OPS_SET,
-  WILDS_SET      as _WILDS_SET,
-  HEAVY_SET      as _HEAVY_SET,
-  DESCRIPTION_BOARD as _DESCRIPTION_BOARD,
-} from './boardConstants.js';
+  OPS_ALL, toRange, clamp, randInt, shuffle, weightedSample,
+  scoreEquationDifficulty, isValidEquation, evalExpr,
+} from './bingoMath.js';
 
-// ─── Placement pipeline (popularity-aware cross-bingo placement) ──────────────
+import {
+  LIGHT_DIGS, HEAVY_LIST, HEAVY_SET, OPS_SET, WILDS_SET,
+  numTiles, makeCounts,
+  equationToTileCounts, equationToSourceTiles,
+  analyzeCounts,
+  withinPoolLimits,
+  sumCounts,
+} from './tileHelpers.js';
+
+// ─── Placement pipeline ────────────────────────────────────────────────────────
 import {
   selectRealisticPlacement,
   selectLockPositions,
   passesRealismFilter,
 } from './crossBingoPlacement.js';
 
+// ─── Equation construction ────────────────────────────────────────────────────
+import { POOL_DEF, constructEquationV6, constructEquation } from './equationConstructors.js';
+
+// ─── DFS solver + cache ───────────────────────────────────────────────────────
+import { findEquationsFromTiles, _dfsLookupOrRun, getDfsCacheStats } from './dfsSolver.js';
+
+// ─── Board builder ────────────────────────────────────────────────────────────
+import { buildBoard, optimizeBoardLayout, RACK_SIZE } from './boardBuilder.js';
+
+// ─── Tile mutation + quick checks ─────────────────────────────────────────────
+import { mutateTileCountsSmart, quickChecks } from './equationMutator.js';
+
+// ─── Config validation + feasibility ─────────────────────────────────────────
+import {
+  EQ_MAX_LOCAL,
+  resolveEqualCount,
+  validateConfig,
+  validateDetailedConstraints,
+  isConfigFeasible,
+  explainConstraintFailure,
+  sanitizeConfigForFallback,
+} from './configValidator.js';
+
 // =================================================================
-// SECTION 1 — CONSTANTS
+// SECTION 1 — CONSTANTS & RE-EXPORTS
 // =================================================================
 
-export const GENERATOR_VERSION = 'v5';
+export const GENERATOR_VERSION = 'v6.2';
 
-export const OPS_ALL = ['+','-','×','÷'];
-export const OPS_SET = new Set(['+','-','×','÷','+/-','×/÷']);
-export const WILDS_SET  = new Set(['?','+/-','×/÷']);
-export const WILD_TILES = WILDS_SET; // alias for component use
+// Re-export from helpers for backward compatibility with components & tests
+export { OPS_ALL, OPS_SET, WILDS_SET, LIGHT_DIGS, HEAVY_LIST, HEAVY_SET };
+export const WILD_TILES = WILDS_SET; // alias used by UI components
 
-export const LIGHT_DIGS = ['1','2','3','4','5','6','7','8','9'];
-export const HEAVY_LIST = ['10','11','12','13','14','15','16','17','18','19','20'];
-export const HEAVY_SET  = new Set(HEAVY_LIST);
+// Re-export POOL_DEF and DESCRIPTION_BOARD
+export { POOL_DEF };
+export { DESCRIPTION_BOARD } from './boardConstants.js';
 
 // ── Tile point values (A-Math standard) ──────────────────────────────────────
 export const TILE_POINTS = {
@@ -59,135 +72,15 @@ export const TILE_POINTS = {
   '+':2, '-':2, '×':2, '÷':2, '+/-':1, '×/÷':1, '=':1, '?':0,
 };
 
-// ── Description board 15×15 ───────────────────────────────────────────────────
-// Symmetric layout inspired by A-Math scoring zones.
-// px1=normal, px2=letter×2(orange), px3=letter×3(blue), px3star=letter×3+star(blue),
-// ex2=word×2(yellow), ex3=word×3(red)
-export const DESCRIPTION_BOARD = [
-  ['ex3','px1','px1','px2','px1','px1','px1','ex3','px1','px1','px1','px2','px1','px1','ex3'],
-  ['px1','ex2','px1','px1','px1','px3','px1','px1','px1','px3','px1','px1','px1','ex2','px1'],
-  ['px1','px1','ex2','px1','px1','px1','px2','px1','px2','px1','px1','px1','ex2','px1','px1'],
-  ['px2','px1','px1','ex2','px1','px1','px1','px2','px1','px1','px1','ex2','px1','px1','px2'],
-  ['px1','px1','px1','px1','px3','px1','px1','px1','px1','px1','px3','px1','px1','px1','px1'],
-  ['px1','px3','px1','px1','px1','px3','px1','px1','px1','px3','px1','px1','px1','px3','px1'],
-  ['px1','px1','px2','px1','px1','px1','px2','px1','px2','px1','px1','px1','px2','px1','px1'],
-  ['ex3','px1','px1','px2','px1','px1','px1','px3star','px1','px1','px1','px2','px1','px1','ex3'],
-  ['px1','px1','px2','px1','px1','px1','px2','px1','px2','px1','px1','px1','px2','px1','px1'],
-  ['px1','px3','px1','px1','px1','px3','px1','px1','px1','px3','px1','px1','px1','px3','px1'],
-  ['px1','px1','px1','px1','px3','px1','px1','px1','px1','px1','px3','px1','px1','px1','px1'],
-  ['px2','px1','px1','ex2','px1','px1','px1','px2','px1','px1','px1','ex2','px1','px1','px2'],
-  ['px1','px1','ex2','px1','px1','px1','px2','px1','px2','px1','px1','px1','ex2','px1','px1'],
-  ['px1','ex2','px1','px1','px1','px3','px1','px1','px1','px3','px1','px1','px1','ex2','px1'],
-  ['ex3','px1','px1','px2','px1','px1','px1','ex3','px1','px1','px1','px2','px1','px1','ex3'],
-];
-
-// Resolve each source tile to its actual equation value (char-by-char scan).
-// Returns string[] aligned 1-to-1 with solutionTiles.
-function computeResolvedTiles(solutionTiles, equation) {
-  const resolved = [...solutionTiles];
-  let ci = 0; // char index in equation string
-
-  for (let i = 0; i < solutionTiles.length && ci < equation.length; i++) {
-    const src = solutionTiles[i];
-    if (src === '=') {
-      resolved[i] = '='; ci++;
-    } else if (OPS_ALL.includes(src)) {
-      resolved[i] = equation[ci]; ci++;
-    } else if (src === '+/-' || src === '×/÷') {
-      resolved[i] = equation[ci]; ci++;
-    } else if (src === '?') {
-      const ch = equation[ci];
-      if (ch === '=' || OPS_ALL.includes(ch)) {
-        resolved[i] = ch; ci++;
-      } else {
-        // Number — check if 2-digit heavy
-        const two = equation.slice(ci, ci + 2);
-        if (HEAVY_SET.has(two)) { resolved[i] = two; ci += 2; }
-        else { resolved[i] = ch; ci++; }
-      }
-    } else if (HEAVY_SET.has(src)) {
-      // Heavy tile occupies 2 chars in the equation string
-      resolved[i] = equation.slice(ci, ci + 2); ci += 2;
-    } else {
-      // Regular digit tile
-      resolved[i] = equation[ci]; ci++;
-    }
-  }
-  return resolved;
-}
-
-const BOARD_SIZE = 15;
-const BOARD_COLS = 5;
-const BOARD_ROWS = 3;
-const RACK_SIZE = 8;
-
-const RESULT_MIN = 0;
-const RESULT_MAX = 200;
-
 // =================================================================
-// SECTION 2 — TILE POOL
+// SECTION 2 — TILE ASSIGNMENT
 // =================================================================
 
-// Pool Definition (tile availability)
-export const POOL_DEF = {
-  '0':0, '1':4, '2':4, '3':4, '4':4, '5':4, '6':4, '7':4, '8':4, '9':4,
-  '10':1,'11':1,'12':1,'13':1,'14':1,'15':1,'16':1,'17':1,'18':1,'19':1,'20':1,
-  '+':4, '-':4, '×':4, '÷':4, '+/-':4, '×/÷':4, '=':8, '?':2,
-};
-
-// Keep v3 function name for backward compatibility
-function makeCounts(poolDef = POOL_DEF) {
-  return Object.fromEntries(Object.entries(poolDef).map(([k,v]) => [k,v]));
-}
-
-// =================================================================
-// SECTION 3 — EQUATION CONSTRUCTOR
-// =================================================================
-
-function clamp(val, lo, hi) { return Math.max(lo, Math.min(hi, val)); }
-function toRange(v) { if (v == null) return null; return typeof v === 'number' ? [v, v] : v; }
-function inRange(val, range) { if (!range) return true; return val >= range[0] && val <= range[1]; }
-
-function sumCounts(counts) {
-  let s = 0;
-  for (const v of Object.values(counts)) s += v;
-  return s;
-}
-
-function inc(counts, k, n = 1) { counts[k] = (counts[k] || 0) + n; }
-
-function shuffle(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = 0 | (Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-/**
- * applyTileAssignmentToPlacement
- *
- * Adjusts slotProbs in placement so that selectLockPositions respects per-tile-type
- * lock/rack constraints from cfg.tileAssignmentSpec.
- *
- * tileAssignmentSpec keys:
- *   '<op>'      → specific operator ('+', '-', '×', '÷', '+/-', '×/÷')
- *   '?'         → blank tile
- *   '__heavy__' → any heavy tile (10–20)
- *
- * For each key with { locked, onRack }:
- *   - Tile indices of that type are shuffled, then the first `locked` get slotProbs=2
- *     (≥1 = mustLock in selectLockPositions) and the rest get slotProbs=0 (excluded).
- *
- * Exported for testing.
- */
 export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAssignmentSpec) {
   if (!tileAssignmentSpec || Object.keys(tileAssignmentSpec).length === 0) return placement;
 
   const catOf = (tile) => HEAVY_SET.has(tile) ? '__heavy__' : tile;
 
-  // Group tile indices by category
   const byType = {};
   solutionTiles.forEach((tile, i) => {
     const cat = catOf(tile);
@@ -204,11 +97,10 @@ export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAss
     const total = indices.length;
     let lockedN = null;
     const safeInt = (v) => (Number.isFinite(v) ? Math.round(v) : null);
-    const lockedVal  = safeInt(spec.locked);
-    const onRackVal  = safeInt(spec.onRack);
+    const lockedVal = safeInt(spec.locked);
+    const onRackVal = safeInt(spec.onRack);
 
     if (lockedVal != null && onRackVal != null) {
-      // Both specified: locked takes priority, onRack is informational
       lockedN = Math.min(lockedVal, total);
     } else if (lockedVal != null) {
       lockedN = Math.min(lockedVal, total);
@@ -217,1418 +109,736 @@ export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAss
     }
 
     if (lockedN !== null) {
-      indices.slice(0, lockedN).forEach(i => { slotProbs[i] = 2; });   // mustLock
-      indices.slice(lockedN).forEach(i => { slotProbs[i] = 0; });      // excluded → rack
+      indices.slice(0, lockedN).forEach(i => { slotProbs[i] = 2; });
+      indices.slice(lockedN).forEach(i => { slotProbs[i] = 0; });
     }
   }
 
   return { ...placement, slotProbs };
 }
 
-function weightedSample(items, weights) {
-  let total = 0;
-  for (const w of weights) total += w;
-  let r = Math.random() * total;
-  for (let i = 0; i < items.length; i++) {
-    r -= weights[i];
-    if (r <= 0) return items[i];
-  }
-  return items[items.length - 1];
-}
+// =================================================================
+// SECTION 3 — RESOLVED TILES (wild-card resolution for display)
+// =================================================================
 
-// Integer arithmetic with operator precedence (× ÷ before + −).
-// Returns null if expression is invalid or yields non-integer result.
-function evalExpr(expr) {
-  const toks = expr.match(/\d+|[+×÷-]/g);
-  if (!toks || toks.length === 0) return null;
-  if (toks.length % 2 === 0) return null; // must be num (op num)...
+function computeResolvedTiles(solutionTiles, equation) {
+  const resolved = [...solutionTiles];
+  let ci = 0;
 
-  const nums = [];
-  const ops = [];
-  for (let i = 0; i < toks.length; i++) {
-    if (i % 2 === 0) {
-      const n = parseInt(toks[i], 10);
-      if (Number.isNaN(n)) return null;
-      nums.push(n);
-    } else {
-      const op = toks[i];
-      if (!OPS_ALL.includes(op)) return null;
-      ops.push(op);
-    }
-  }
-  if (ops.length !== nums.length - 1) return null;
-
-  // First pass: × and ÷
-  const pNums = [nums[0]];
-  const pOps = [];
-  for (let i = 0; i < ops.length; i++) {
-    const op = ops[i];
-    const right = nums[i + 1];
-    if (op === '×' || op === '÷') {
-      const left = pNums[pNums.length - 1];
-      if (op === '×') {
-        pNums[pNums.length - 1] = left * right;
+  for (let i = 0; i < solutionTiles.length && ci < equation.length; i++) {
+    const src = solutionTiles[i];
+    if (src === '=') {
+      resolved[i] = '='; ci++;
+    } else if (OPS_ALL.includes(src)) {
+      resolved[i] = equation[ci]; ci++;
+    } else if (src === '+/-' || src === '×/÷') {
+      resolved[i] = equation[ci]; ci++;
+    } else if (src === '?') {
+      const ch = equation[ci];
+      if (ch === '=' || OPS_ALL.includes(ch)) {
+        resolved[i] = ch; ci++;
       } else {
-        if (right === 0) return null;
-        if (left % right !== 0) return null;
-        pNums[pNums.length - 1] = left / right;
+        const two = equation.slice(ci, ci + 2);
+        if (HEAVY_SET.has(two)) { resolved[i] = two; ci += 2; }
+        else { resolved[i] = ch; ci++; }
       }
+    } else if (HEAVY_SET.has(src)) {
+      resolved[i] = equation.slice(ci, ci + 2); ci += 2;
     } else {
-      pOps.push(op);
-      pNums.push(right);
+      resolved[i] = equation[ci]; ci++;
     }
   }
-
-  // Second pass: + and -
-  let v = pNums[0];
-  for (let i = 0; i < pOps.length; i++) {
-    const op = pOps[i];
-    const r = pNums[i + 1];
-    if (op === '+') v += r;
-    else if (op === '-') v -= r;
-    else return null;
-  }
-  return v;
-}
-
-// ─── Rational arithmetic helpers (for player validation) ─────────────────────
-function _gcd(a, b) {
-  a = Math.abs(a); b = Math.abs(b);
-  while (b) { const t = b; b = a % b; a = t; }
-  return a || 1;
-}
-function _frac(n, d) {
-  if (d === 0) return null;
-  if (d < 0) { n = -n; d = -d; }
-  const g = _gcd(Math.abs(n), d);
-  return { n: n / g, d: d / g };
-}
-
-// Like evalExpr but returns a reduced fraction {n,d} — allows non-integer division.
-function evalExprRational(expr) {
-  const toks = expr.match(/\d+|[+×÷-]/g);
-  if (!toks || toks.length === 0) return null;
-  if (toks.length % 2 === 0) return null;
-
-  const nums = [];
-  const ops = [];
-  for (let i = 0; i < toks.length; i++) {
-    if (i % 2 === 0) {
-      const n = parseInt(toks[i], 10);
-      if (Number.isNaN(n)) return null;
-      nums.push(_frac(n, 1));
-    } else {
-      const op = toks[i];
-      if (!OPS_ALL.includes(op)) return null;
-      ops.push(op);
-    }
-  }
-  if (ops.length !== nums.length - 1) return null;
-
-  // First pass: × and ÷
-  const pNums = [nums[0]];
-  const pOps = [];
-  for (let i = 0; i < ops.length; i++) {
-    const op = ops[i];
-    const right = nums[i + 1];
-    const left = pNums[pNums.length - 1];
-    if (op === '×') {
-      const r = _frac(left.n * right.n, left.d * right.d);
-      if (!r) return null;
-      pNums[pNums.length - 1] = r;
-    } else if (op === '÷') {
-      if (right.n === 0) return null;
-      const r = _frac(left.n * right.d, left.d * right.n);
-      if (!r) return null;
-      pNums[pNums.length - 1] = r;
-    } else {
-      pOps.push(op);
-      pNums.push(right);
-    }
-  }
-
-  // Second pass: + and -
-  let v = pNums[0];
-  for (let i = 0; i < pOps.length; i++) {
-    const op = pOps[i];
-    const r = pNums[i + 1];
-    if (op === '+') v = _frac(v.n * r.d + r.n * v.d, v.d * r.d);
-    else if (op === '-') v = _frac(v.n * r.d - r.n * v.d, v.d * r.d);
-    else return null;
-    if (!v) return null;
-  }
-  return v;
-}
-
-function isValidEquation(eq, requiredEquals, checkRange = true) {
-  const parts = eq.split('=');
-  if (parts.length - 1 !== requiredEquals) return false;
-  if (parts.some(p => p.length === 0)) return false;
-
-  if (checkRange) {
-    // Generator mode: integer results only, within RESULT_MIN..RESULT_MAX
-    const vals = parts.map(evalExpr);
-    if (vals.some(v => v === null)) return false;
-    if (!vals.every(v => v >= RESULT_MIN && v <= RESULT_MAX)) return false;
-    return vals.every(v => v === vals[0]);
-  } else {
-    // Player mode: allow rational results, no range constraint
-    const vals = parts.map(evalExprRational);
-    if (vals.some(v => v === null)) return false;
-    return vals.every(v => v.n === vals[0].n && v.d === vals[0].d);
-  }
-}
-
-// Splits "3×4=12" into ['3','×','4','=','12']
-function tokenizeEquation(eq) {
-  const toks = eq.match(/\d+|[+×÷=-]/g);
-  return toks || null;
-}
-
-function randInt(lo, hi) {
-  return lo + (0 | (Math.random() * (hi - lo + 1)));
-}
-
-function pickOpWeighted() {
-  // Bias toward +/× because they tend to keep numbers non-negative and integer-safe.
-  const ops = ['+','-','×','÷'];
-  const w = [5, 2, 5, 2];
-  return weightedSample(ops, w);
-}
-
-function safeApplyOp(a, op, b) {
-  if (op === '+') return a + b;
-  if (op === '-') return a - b;
-  if (op === '×') return a * b;
-  if (op === '÷') {
-    if (b === 0) return null;
-    if (a % b !== 0) return null;
-    return a / b;
-  }
-  return null;
-}
-
-function safeEvalL2R(nums, ops) {
-  let v = nums[0];
-  for (let i = 0; i < ops.length; i++) {
-    const next = safeApplyOp(v, ops[i], nums[i + 1]);
-    if (next === null) return null;
-    v = next;
-  }
-  return v;
-}
-
-/**
- * constructEquation(eqCount)
- *
- * Create a valid A-Math equation string with exactly eqCount '=' signs.
- * Constraints:
- * - integer arithmetic (division must be exact)
- * - results between 0 and 200 (inclusive)
- *
- * Important: The DFS validator uses left-to-right evaluation, so constructor does too.
- */
-function constructEquation(eqCount, opts = {}) {
-  const { targetTiles = null } = opts;
-  const MAX_TRIES = targetTiles == null ? 2500 : 15000;
-
-  const tileCountOfEquation = (eq) => {
-    const toks = tokenizeEquation(eq);
-    if (!toks) return Infinity;
-    let count = 0;
-    for (const tok of toks) {
-      if (tok === '=' || OPS_ALL.includes(tok)) { count += 1; continue; }
-      const n = parseInt(tok, 10);
-      if (Number.isNaN(n) || n < 0) return Infinity;
-      const asHeavy = String(n);
-      if (HEAVY_SET.has(asHeavy)) { count += 1; continue; }
-      count += String(n).length;
-    }
-    return count;
-  };
-
-  const accept = (eq) => isValidEquation(eq, eqCount) && (targetTiles == null || tileCountOfEquation(eq) === targetTiles);
-
-  for (let t = 0; t < MAX_TRIES; t++) {
-    // Fast-path for target tile budgets:
-    // Prefer equations composed mostly of HEAVY tiles (10–20) + explicit operators.
-    // This dramatically reduces DFS branching compared to many digit tiles.
-    if (targetTiles != null) {
-      if (eqCount === 1) {
-        // Form: n1 op n2 op ... op nm = R
-        // Prefer all-heavy numbers with +/- so RHS is also a heavy tile.
-        // Tokens (single-tile numbers): m nums + (m-1) ops + '=' + R => 2m + 1
-        const m = Math.max(2, ((targetTiles - 1) / 2) | 0);
-        if (2 * m + 1 === targetTiles) {
-          // Deterministic low-entropy construction when possible:
-          // If (m-1) is even, we can cancel with +A -A pairs to force the result to stay R.
-          // Example (m=5): R + A - A + A - A = R
-          if (((m - 1) % 2) === 0) {
-            // Use single digits (1–9) so pool can support repeats (4 copies each).
-            const R = randInt(1, 9);
-            const pairCount = (m - 1) / 2;
-            const ds = shuffle(LIGHT_DIGS.map(x => parseInt(x, 10))).filter(x => x !== R).slice(0, pairCount);
-            if (ds.length === pairCount) {
-              const nums = [R];
-              const ops = [];
-              for (const d of ds) {
-                nums.push(d, d);
-                ops.push('+', '-');
-              }
-              const eq = `${nums[0]}${ops.map((op, i) => `${op}${nums[i + 1]}`).join('')}=${R}`;
-              if (accept(eq)) return eq;
-            }
-          }
-
-          const nums = Array.from({ length: m }, () => parseInt(HEAVY_LIST[randInt(0, HEAVY_LIST.length - 1)], 10));
-          const ops = Array.from({ length: m - 1 }, () => (Math.random() < 0.55 ? '+' : '-'));
-          const v = safeEvalL2R(nums, ops);
-          if (v == null || v < RESULT_MIN || v > RESULT_MAX) continue;
-          if (!HEAVY_SET.has(String(v))) continue; // keep RHS as 1 tile
-          const eq = `${nums[0]}${ops.map((op, i) => `${op}${nums[i + 1]}`).join('')}=${v}`;
-          if (accept(eq)) return eq;
-        }
-      }
-
-      if (eqCount === 2) {
-        // Form: n1 op ... op nm = R = R  (R heavy => single-tile)
-        // Tokens: (2m-1) + 2 '=' + 2 results => 2m + 3
-        const m = Math.max(2, ((targetTiles - 3) / 2) | 0);
-        if (2 * m + 3 === targetTiles) {
-          if (((m - 1) % 2) === 0) {
-            const R = randInt(1, 9);
-            const pairCount = (m - 1) / 2;
-            const ds = shuffle(LIGHT_DIGS.map(x => parseInt(x, 10))).filter(x => x !== R).slice(0, pairCount);
-            if (ds.length === pairCount) {
-              const nums = [R];
-              const ops = [];
-              for (const d of ds) {
-                nums.push(d, d);
-                ops.push('+', '-');
-              }
-              const eq = `${nums[0]}${ops.map((op, i) => `${op}${nums[i + 1]}`).join('')}=${R}=${R}`;
-              if (accept(eq)) return eq;
-            }
-          }
-
-          const nums = Array.from({ length: m }, () => parseInt(HEAVY_LIST[randInt(0, HEAVY_LIST.length - 1)], 10));
-          const ops = Array.from({ length: m - 1 }, () => (Math.random() < 0.55 ? '+' : '-'));
-          const v = safeEvalL2R(nums, ops);
-          if (v == null || v < RESULT_MIN || v > RESULT_MAX) continue;
-          if (!HEAVY_SET.has(String(v))) continue;
-          const eq = `${nums[0]}${ops.map((op, i) => `${op}${nums[i + 1]}`).join('')}=${v}=${v}`;
-          if (accept(eq)) return eq;
-        }
-      }
-    }
-
-    if (eqCount === 1) {
-      const kind = weightedSample(
-        ['bin', 'tri', 'twoSide'],
-        [3, 6, 5]
-      );
-
-      if (kind === 'bin') {
-        // a op b = c
-        const a = randInt(0, 20);
-        const b = randInt(0, 20);
-        const op = pickOpWeighted();
-        const c = safeApplyOp(a, op, b);
-        if (c === null || c < RESULT_MIN || c > RESULT_MAX) continue;
-        const eq = `${a}${op}${b}=${c}`;
-        if (accept(eq)) return eq;
-      }
-
-      if (kind === 'tri') {
-        // a op b op c = d  (left-to-right)
-        const a = randInt(0, 20);
-        const b = randInt(0, 20);
-        const c = randInt(0, 20);
-        const op1 = pickOpWeighted();
-        const op2 = pickOpWeighted();
-        const d = safeEvalL2R([a, b, c], [op1, op2]);
-        if (d === null || d < RESULT_MIN || d > RESULT_MAX) continue;
-        const eq = `${a}${op1}${b}${op2}${c}=${d}`;
-        if (accept(eq)) return eq;
-      }
-
-      if (kind === 'twoSide') {
-        // a op b = c op d  (left-to-right on each side)
-        const a = randInt(0, 20);
-        const b = randInt(0, 20);
-        const c = randInt(0, 20);
-        const d = randInt(0, 20);
-        const opL = pickOpWeighted();
-        const opR = pickOpWeighted();
-        const lv = safeEvalL2R([a, b], [opL]);
-        const rv = safeEvalL2R([c, d], [opR]);
-        if (lv === null || rv === null) continue;
-        if (lv !== rv) continue;
-        if (lv < RESULT_MIN || lv > RESULT_MAX) continue;
-        const eq = `${a}${opL}${b}=${c}${opR}${d}`;
-        if (accept(eq)) return eq;
-      }
-    }
-
-    if (eqCount === 2) {
-      const kind = weightedSample(
-        ['chain', 'twoOpsChain'],
-        [6, 4]
-      );
-
-      if (kind === 'chain') {
-        // a op b = c = d
-        const a = randInt(0, 20);
-        const b = randInt(0, 20);
-        const op = pickOpWeighted();
-        const v = safeApplyOp(a, op, b);
-        if (v === null || v < RESULT_MIN || v > RESULT_MAX) continue;
-        const eq = `${a}${op}${b}=${v}=${v}`;
-        if (accept(eq)) return eq;
-      }
-
-      if (kind === 'twoOpsChain') {
-        // a op b = c op d = v
-        const c = randInt(0, 20);
-        const d = randInt(0, 20);
-        const opR = pickOpWeighted();
-        const v = safeEvalL2R([c, d], [opR]);
-        if (v === null || v < RESULT_MIN || v > RESULT_MAX) continue;
-
-        // Now choose a, b, opL such that a opL b == v
-        const opL = pickOpWeighted();
-        let a = randInt(0, 20);
-        let b = randInt(0, 20);
-
-        // Try to synthesize more directly for ÷ and ×
-        if (opL === '÷') {
-          b = randInt(1, 20);
-          a = v * b;
-          if (a > 200) continue;
-        } else if (opL === '×') {
-          b = randInt(0, 20);
-          a = b === 0 ? 0 : (v % b === 0 ? v / b : randInt(0, 20));
-        } else if (opL === '+') {
-          b = randInt(0, 20);
-          a = v - b;
-        } else if (opL === '-') {
-          b = randInt(0, 20);
-          a = v + b;
-        }
-
-        if (a < 0 || a > 200 || b < 0 || b > 20) continue;
-        const lv = safeEvalL2R([a, b], [opL]);
-        if (lv !== v) continue;
-        const eq = `${a}${opL}${b}=${c}${opR}${d}=${v}`;
-        if (accept(eq)) return eq;
-      }
-    }
-  }
-
-  // Fallback (should be very rare)
-  return eqCount === 2 ? '12÷4=3=3' : '3×4=12';
-}
-
-/**
- * equationToTileCounts(eq)
- *
- * Convert an equation string into a multiset of tiles required to represent it.
- * - numbers 10–20 prefer heavy tiles when possible (1 tile)
- * - other numbers use digit tiles per character
- * - operators and '=' map directly
- */
-function equationToTileCounts(eq, opts = {}) {
-  const { preferHeavy = true } = opts;
-  const toks = tokenizeEquation(eq);
-  if (!toks) throw new Error(`Cannot tokenize equation: ${eq}`);
-  const counts = {};
-  for (const tok of toks) {
-    if (tok === '=' || OPS_ALL.includes(tok)) {
-      inc(counts, tok, 1);
-      continue;
-    }
-    // number token
-    const n = parseInt(tok, 10);
-    if (Number.isNaN(n) || n < 0) throw new Error(`Unsupported number token: ${tok}`);
-    const asHeavy = String(n);
-    if (preferHeavy && HEAVY_SET.has(asHeavy)) {
-      inc(counts, asHeavy, 1);
-      continue;
-    }
-    const digits = String(n).split('');
-    for (const d of digits) inc(counts, d, 1);
-  }
-  return counts;
+  return resolved;
 }
 
 // =================================================================
-// SECTION 4 — TILE BUILDERS
+// SECTION 4 — EQUATION-FIRST BUILDER
 // =================================================================
 
-function analyzeTiles(tileList) {
-  let ops = 0, heavy = 0, equals = 0, wilds = 0, blanks = 0;
-  const opSpec = {};
-  for (const t of tileList) {
-    if (OPS_SET.has(t)) { ops++; opSpec[t] = (opSpec[t] || 0) + 1; }
-    if (HEAVY_SET.has(t)) heavy++;
-    if (t === '=') equals++;
-    if (WILDS_SET.has(t)) wilds++;
-    if (t === '?') blanks++;
+// v6.2: Pre-filters N_ops to structurally feasible values before random
+// selection — eliminates wasted retries on impossible operator counts.
+function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
+  const opRange = toRange(cfg.operatorCount);
+  const rawLo = opRange ? opRange[0] : (eqCount >= 3 ? 0 : 1);
+  const rawHi = opRange ? opRange[1] : (eqCount >= 3 ? 2 : 3);
+
+  const feasibleOps = [];
+  for (let n = rawLo; n <= rawHi; n++) {
+    const nb = totalTile - eqCount - n;
+    const ns = n + eqCount + 1;
+    if (nb >= ns && nb <= 3 * ns) feasibleOps.push(n);
   }
-  return { ops, heavy, equals, wilds, blanks, opSpec };
-}
+  if (feasibleOps.length === 0) return null;
 
-function analyzeCounts(tileCounts) {
-  const tileList = [];
-  for (const [k, v] of Object.entries(tileCounts)) {
-    for (let i = 0; i < v; i++) tileList.push(k);
-  }
-  return analyzeTiles(tileList);
-}
+  const N_ops = feasibleOps[0 | (Math.random() * feasibleOps.length)];
 
-function satisfiesConfigFromCounts(tileCounts, cfg, requiredEquals) {
-  const a = analyzeCounts(tileCounts);
-  if (requiredEquals != null && a.equals !== requiredEquals) return false;
-  if (!inRange(a.ops, toRange(cfg.operatorCount))) return false;
-  if (!inRange(a.heavy, toRange(cfg.heavyCount))) return false;
-  if (!inRange(a.wilds, toRange(cfg.wildcardCount))) return false;
-  if (!inRange(a.blanks, toRange(cfg.blankCount))) return false;
-  if (cfg.operatorSpec) {
-    for (const [op, constraint] of Object.entries(cfg.operatorSpec)) {
-      if (!inRange(a.opSpec[op] || 0, toRange(constraint))) return false;
-    }
-  }
-  return true;
-}
+  const numBudget = totalTile - eqCount - N_ops;
+  const numSlots  = N_ops + eqCount + 1;
+  if (numBudget < numSlots || numBudget > 3 * numSlots) return null;
 
-function withinPoolLimits(tileCounts, poolDef = POOL_DEF) {
-  for (const [k, v] of Object.entries(tileCounts)) {
-    if ((poolDef[k] ?? 0) < v) return false;
-  }
-  return true;
-}
-
-function replaceOne(tileCounts, from, to) {
-  if ((tileCounts[from] || 0) <= 0) return false;
-  tileCounts[from]--;
-  if (tileCounts[from] === 0) delete tileCounts[from];
-  inc(tileCounts, to, 1);
-  return true;
-}
-
-function _flexifyTileCounts(tileCounts, cfg, eqCount, poolDef = POOL_DEF) {
-  // Weighted tile expansion without changing total tile budget:
-  // replace some specific tiles with flexible equivalents ('?', '+/-', '×/÷').
-  // This preserves solvability because the original seed equation can still be formed
-  // by choosing appropriate substitutions during DFS.
-  // blankCount controls only '?' tiles; wildcardCount controls all wilds
-  const blankRange = toRange(cfg.blankCount);
-  const wildRange  = toRange(cfg.wildcardCount);
-  if (!blankRange && !wildRange) return { ...tileCounts };
-
-  // Use blankRange if set, otherwise fall back to wildRange
-  const activeRange = blankRange ?? wildRange;
-  const minWild = activeRange[0];
-  const maxWild = activeRange[1];
-  const targetWild = clamp(
-    minWild + (0 | (Math.random() * (Math.max(0, maxWild - minWild) + 1))),
-    minWild,
-    maxWild
-  );
-
-  const counts = { ...tileCounts };
-  const pool = makeCounts(poolDef);
-  for (const [k, v] of Object.entries(counts)) pool[k] -= v;
-  const canAdd = (t) => (pool[t] || 0) > 0;
-
-  // Make sure we keep real '=' tiles (avoid replacing them with '?')
-  // because '=' is always fixed on the board.
-
-  // Step A: satisfy wildcard minimum (prefer replacing number tiles with '?')
-  let guard = 0;
-  while (analyzeCounts(counts).wilds < targetWild && guard++ < 200) {
-    if (!canAdd('?')) break;
-    const choices = [];
-    // Only replace tiles that '?' can safely stand in for during DFS:
-    // - any single digit (1–9)
-    // - heavy 10/12 (DFS has a special-case for '?' → 10 or 12)
-    for (const d of LIGHT_DIGS) if ((counts[d] || 0) > 0) choices.push(d);
-    for (const h of ['10', '12']) if ((counts[h] || 0) > 0) choices.push(h);
-    if (!choices.length) break;
-    const from = choices[0 | (Math.random() * choices.length)];
-    replaceOne(counts, from, '?');
-    pool['?']--;
-    pool[from]++; // freed up
-    if (!withinPoolLimits(counts, poolDef)) break;
-  }
-
-  // Step B: optional operator flex (only if still under wildcard target)
-  const tryReplaceOp = (from, to) => {
-    if (!canAdd(to)) return false;
-    if (!replaceOne(counts, from, to)) return false;
-    if (!withinPoolLimits(counts, poolDef)) { replaceOne(counts, to, from); return false; }
-    if (!satisfiesConfigFromCounts(counts, cfg, eqCount)) { replaceOne(counts, to, from); return false; }
-    pool[to]--; pool[from]++;
-    return true;
-  };
-
-  guard = 0;
-  while (analyzeCounts(counts).wilds < targetWild && guard++ < 50) {
-    const ops = [];
-    if ((counts['+'] || 0) > 0) ops.push(['+', '+/-']);
-    if ((counts['-'] || 0) > 0) ops.push(['-', '+/-']);
-    if ((counts['×'] || 0) > 0) ops.push(['×', '×/÷']);
-    if ((counts['÷'] || 0) > 0) ops.push(['÷', '×/÷']);
-    if (!ops.length) break;
-    const [from, to] = ops[0 | (Math.random() * ops.length)];
-    if (!tryReplaceOp(from, to)) break;
-  }
-
-  return counts;
-}
-
-function pickIntInRange(range, fallbackLo, fallbackHi) {
-  const r = toRange(range);
-  const rawLo = r ? r[0] : fallbackLo;
-  const rawHi = r ? r[1] : fallbackHi;
-  // Guard against NaN (e.g. from UI state that got corrupted)
-  const lo = (Number.isFinite(rawLo)) ? rawLo : fallbackLo;
-  const hi = (Number.isFinite(rawHi)) ? rawHi : fallbackHi;
-  if (hi < lo) return lo;
-  return randInt(lo, hi);
-}
-
-function buildTileCountsBasedOnConfig(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
-  // This mirrors the idea in `equationAnagramLogic.ts`:
-  // - sample exact counts from the *true pool*
-  // - respect config constraints as hard bounds
-  // - only then validate solvability (DFS validator)
-  const pool = makeCounts(poolDef);
-  const counts = {};
-
-  const takeFromPool = (t) => {
-    if ((pool[t] || 0) <= 0) return false;
-    pool[t]--;
-    inc(counts, t, 1);
-    return true;
-  };
-
-  // 1) Equals (must be real '=' tiles so '=' can be locked on board)
-  for (let i = 0; i < eqCount; i++) {
-    if (!takeFromPool('=')) return null;
-  }
-
-  // 2) Choose target totals (hard constraints)
-  const opTarget    = pickIntInRange(cfg.operatorCount, 2, Math.min(6, totalTile - eqCount - 2));
-  const heavyTarget = pickIntInRange(cfg.heavyCount,    0, Math.min(3, totalTile - eqCount - 3));
-  const wildTarget  = pickIntInRange(cfg.wildcardCount, 0, Math.min(2, totalTile - eqCount - 3));
-  // blankCount controls only '?' tiles (separate from +/- and ×/÷)
-  const blankTarget = pickIntInRange(cfg.blankCount,    0, Math.min(2, totalTile - eqCount - 3));
-
-  // 3) Operators: respect operatorSpec first (min), then fill to opTarget
-  // Shuffle core ops each call to avoid systematic ordering bias across retries.
-  const coreOpsShuffled = shuffle(['+', '-', '×', '÷']);
-  const opsAll = [...coreOpsShuffled, '+/-', '×/÷'];
-  const opSpec = cfg.operatorSpec || null;
-
-  if (opSpec) {
-    for (const op of opsAll) {
-      const rr = toRange(opSpec[op]);
-      const min = rr ? rr[0] : 0;
-      for (let i = 0; i < min; i++) {
-        if (!takeFromPool(op)) return null;
-      }
-    }
-  }
-
-  const currentOps = () => analyzeCounts(counts).ops;
-  while (currentOps() < opTarget) {
-    // Pick an operator that does not exceed operatorSpec max (if provided)
-    const cand = [];
-    for (const op of opsAll) {
-      if ((pool[op] || 0) <= 0) continue;
-      const rr = opSpec ? toRange(opSpec[op]) : null;
-      if (rr) {
-        const curr = counts[op] || 0;
-        if (curr >= rr[1]) continue;
-      }
-      cand.push(op);
-    }
-    if (!cand.length) return null;
-    // Weight toward core ops, not choice ops
-    const op = weightedSample(cand, cand.map(o => (o === '+/-' || o === '×/÷' ? 2 : 5)));
-    if (!takeFromPool(op)) return null;
-  }
-
-  // 4) Heavy numbers
-  while ((analyzeCounts(counts).heavy) < heavyTarget) {
-    const heavyAvail = HEAVY_LIST.filter(h => (pool[h] || 0) > 0);
-    if (!heavyAvail.length) return null;
-    const h = weightedSample(heavyAvail, heavyAvail.map(x => pool[x]));
-    if (!takeFromPool(h)) return null;
-  }
-
-  // 5a) blankCount — only '?' tiles
-  while ((analyzeCounts(counts).blanks) < blankTarget) {
-    if ((pool['?'] || 0) <= 0) break;
-    if (!takeFromPool('?')) return null;
-  }
-
-  // 5b) Wildcards (count includes '?', '+/-', '×/÷')
-  // Prefer '?' first to meet wildcardCount if requested (but don't overdo).
-  while (analyzeCounts(counts).wilds < wildTarget) {
-    if ((pool['?'] || 0) > 0) {
-      if (!takeFromPool('?')) return null;
-    } else if ((pool['+/-'] || 0) > 0) {
-      if (!takeFromPool('+/-')) return null;
-    } else if ((pool['×/÷'] || 0) > 0) {
-      if (!takeFromPool('×/÷')) return null;
-    } else {
-      return null;
-    }
-  }
-
-  // 6) Fill remaining with light digits (pool-aware)
-  while (sumCounts(counts) < totalTile) {
-    const digits = LIGHT_DIGS.filter(d => (pool[d] || 0) > 0);
-    if (!digits.length) return null;
-    const d = weightedSample(digits, digits.map(x => pool[x]));
-    if (!takeFromPool(d)) return null;
-  }
-
-  if (sumCounts(counts) !== totalTile) return null;
-  if (!withinPoolLimits(counts, poolDef)) return null;
-  if (!satisfiesConfigFromCounts(counts, cfg, eqCount)) return null;
-
-  // Ensure no '=' ends up in rack by construction (we only used '=' tiles).
-  return counts;
-}
-
-/**
- * hybridTileBuilder(totalTile, cfg, eqCount)
- *
- * v5 (anagram-style) tile builder:
- * - build tileCounts from the real pool to satisfy config first
- * - then rely on the DFS validator to confirm solvability
- *
- * Returns { tileCounts, seedEquation } or null.
- */
-function hybridTileBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
-  const MAX_BUILDER_TRIES = 2500;
+  const slack = numBudget - numSlots;
+  const MAX_BUILDER_TRIES = eqCount >= 3
+    ? (slack <= 1 ? 30 : 50)
+    : (slack <= 1 ? 16 : slack === 2 ? 28 : 48);
 
   for (let attempt = 0; attempt < MAX_BUILDER_TRIES; attempt++) {
-    const tileCounts = buildTileCountsBasedOnConfig(totalTile, cfg, eqCount, poolDef);
-    if (!tileCounts) continue;
-    // seedEquation is now only informational (we construct via DFS)
-    return { tileCounts, seedEquation: null };
+    const eq = constructEquationV6(N_ops, eqCount, totalTile, cfg.operatorSpec ?? null, poolDef);
+    if (!eq) continue;
+
+    let tileCounts;
+    try {
+      tileCounts = equationToTileCounts(eq, { preferHeavy: true });
+    } catch {
+      continue;
+    }
+
+    if (sumCounts(tileCounts) !== totalTile) continue;
+    if (!withinPoolLimits(tileCounts, poolDef)) continue;
+
+    const mutated = mutateTileCountsSmart(tileCounts, cfg, eqCount, poolDef);
+    if (!mutated) continue;
+
+    if (!quickChecks(mutated, cfg, eqCount)) continue;
+
+    const mutAnalysis = analyzeCounts(mutated);
+    if (mutAnalysis.wilds > 0) {
+      const found = _dfsLookupOrRun(mutated, eqCount);
+      if (!found.length) {
+        if (!quickChecks(tileCounts, cfg, eqCount)) continue;
+        const wRange = toRange(cfg.wildcardCount);
+        const bRange = toRange(cfg.blankCount);
+        if ((wRange && wRange[0] > 0) || (bRange && bRange[0] > 0)) continue;
+        return { tileCounts, seedEquation: eq };
+      }
+    }
+
+    return { tileCounts: mutated, seedEquation: eq };
   }
 
   return null;
 }
 
-// =================================================================
-// SECTION 5 — DFS SOLVER (existing)
-// =================================================================
+const hybridTileBuilder = equationFirstBuilder;
 
-/**
- * findEquationsFromTiles(tileCounts, requiredEquals, maxResults)
- *
- * Preserved from v3.
- * Given an exact multiset of tiles (tileCounts), find equations that:
- * 1. Use ALL tiles exactly
- * 2. Contain exactly `requiredEquals` '=' signs
- * 3. Are arithmetically valid (integer arithmetic with × ÷ precedence)
- *
- * Returns array of { eq: string, tiles: string[] }
- * where `tiles` is the ordered list of source tiles used (matching equation token order).
- */
-function findEquationsFromTiles(tileCounts, requiredEquals, maxResults = 1) {
-  const results = [];
-  const eqParts = [];   // string tokens forming the equation
-  const srcTiles = [];  // parallel: source tile for each eqPart
+// ── Operator diversity helpers ────────────────────────────────────────────────
+// Used inside the main retry loop to vary operator combinations each attempt.
 
-  function rem() {
-    let s = 0;
-    for (const v of Object.values(tileCounts)) s += v;
-    return s;
-  }
-  function take(t) { tileCounts[t]--; }
-  function put(t) { tileCounts[t]++; }
+const _rndAdd = () => (Math.random() < 0.5 ? '+' : '-');
+const _rndMul = () => (Math.random() < 0.6 ? '×' : '÷'); // slightly favour × over ÷
 
-  // Try to place a number, then call onComplete() for each valid placement.
-  function buildNum(onComplete, zeroOk) {
-    if (results.length >= maxResults) return;
-
-    // Heavy tiles (10–20) – single tile, standalone number
-    for (const h of HEAVY_LIST) {
-      if ((tileCounts[h] || 0) > 0) {
-        take(h);
-        eqParts.push(h); srcTiles.push(h);
-        onComplete();
-        eqParts.pop(); srcTiles.pop();
-        put(h);
-        if (results.length >= maxResults) return;
-      }
-    }
-
-    // '?' used as heavy number (10 or 12)
-    if ((tileCounts['?'] || 0) > 0) {
-      for (const h of ['10', '12']) {
-        take('?');
-        eqParts.push(h); srcTiles.push('?');
-        onComplete();
-        eqParts.pop(); srcTiles.pop();
-        put('?');
-        if (results.length >= maxResults) return;
-      }
-    }
-
-    // Zero (standalone '0') — only when allowed
-    if (zeroOk) {
-      for (const src of ['0', '?']) {
-        if ((tileCounts[src] || 0) > 0) {
-          take(src);
-          eqParts.push('0'); srcTiles.push(src);
-          onComplete();
-          eqParts.pop(); srcTiles.pop();
-          put(src);
-          if (results.length >= maxResults) return;
-        }
-      }
-    }
-
-    // Compose 1–3 light digits into a number (e.g., '3','7' → "37")
-    const digitOrder = shuffle(LIGHT_DIGS);
-
-    function composeDigits(built, builtSrcs) {
-      if (results.length >= maxResults) return;
-      if (built.length > 0) {
-        eqParts.push(built);
-        srcTiles.push(...builtSrcs);
-        onComplete();
-        // pop: 1 eqPart, N srcTiles
-        eqParts.pop();
-        for (let i = 0; i < builtSrcs.length; i++) srcTiles.pop();
-      }
-      if (built.length >= 3) return;
-      for (const d of digitOrder) {
-        for (const src of [d, '?']) {
-          if ((tileCounts[src] || 0) > 0) {
-            take(src);
-            composeDigits(built + d, [...builtSrcs, src]);
-            put(src);
-            if (results.length >= maxResults) return;
-          }
-        }
-      }
-    }
-    composeDigits('', []);
-  }
-
-  // Main DFS phases: 'num' = need a number next; 'op' = need an op/= next
-  function dfs(phase, usedEq) {
-    if (results.length >= maxResults) return;
-
-    if (rem() === 0) {
-      // All tiles consumed; valid if we ended after a number with right '=' count
-      if (phase === 'op' && usedEq === requiredEquals) {
-        const eq = eqParts.join('');
-        if (isValidEquation(eq, requiredEquals)) results.push({ eq, tiles: [...srcTiles] });
-      }
-      return;
-    }
-
-    if (phase === 'num') {
-      buildNum(() => dfs('op', usedEq), true);
-      return;
-    }
-
-    // phase === 'op'
-    // Place '='
-    if (usedEq < requiredEquals) {
-      for (const src of ['=', '?']) {
-        if ((tileCounts[src] || 0) > 0) {
-          take(src);
-          eqParts.push('=');
-          srcTiles.push(src);
-          dfs('num', usedEq + 1);
-          eqParts.pop(); srcTiles.pop();
-          put(src);
-          if (results.length >= maxResults) return;
-        }
-      }
-    }
-
-    // Place operator: try in shuffled order for diversity
-    for (const op of shuffle(OPS_ALL)) {
-      const srcs = [op];
-      if (op === '+' || op === '-') srcs.push('+/-');
-      if (op === '×' || op === '÷') srcs.push('×/÷');
-      srcs.push('?');
-
-      const tried = new Set();
-      for (const src of srcs) {
-        if (tried.has(src)) continue;
-        tried.add(src);
-        if ((tileCounts[src] || 0) > 0) {
-          take(src);
-          eqParts.push(op); srcTiles.push(src);
-          dfs('num', usedEq);
-          eqParts.pop(); srcTiles.pop();
-          put(src);
-          if (results.length >= maxResults) return;
-        }
-      }
-    }
-  }
-
-  dfs('num', 0);
-  return results;
+function _buildOpSpec(ops) {
+  const spec = { '+': [0,0], '-': [0,0], '×': [0,0], '÷': [0,0], '+/-': [0,0], '×/÷': [0,0] };
+  for (const op of ops) spec[op] = [spec[op][0] + 1, spec[op][1] + 1];
+  return spec;
 }
 
 // =================================================================
-// SECTION 6 — BOARD GENERATOR
+// SECTION 5 — BOARD RESULT ASSEMBLER
 // =================================================================
 
-/**
- * buildTilePerToken(equationTokens, orderedSourceTiles)
- *
- * Preserved behavior from v3: map DFS "source tiles" onto logical equation tokens.
- */
-function buildTilePerToken(equationTokens, orderedSourceTiles) {
-  const result = [];
-  let si = 0;
+function _buildBoardResult(mode, chosen, tileCounts, seedEquation, cfg, totalTile, eqCount) {
+  const difficulty = scoreEquationDifficulty(chosen.eq);
 
-  for (const tok of equationTokens) {
-    if (si >= orderedSourceTiles.length) return null;
-
-    if (tok === '=' || OPS_SET.has(tok)) {
-      result.push({ token: tok, srcs: [orderedSourceTiles[si++]], src: orderedSourceTiles[si - 1] });
-      continue;
-    }
-
-    // Numeric token — determine tile count from the SOURCE tile, not the token.
-    const firstSrc = orderedSourceTiles[si];
-    let tileCount;
-    if (HEAVY_SET.has(firstSrc)) tileCount = 1;
-    else if (firstSrc === '?' && HEAVY_SET.has(tok)) tileCount = 1;
-    else tileCount = tok.replace(/^-/, '').length;
-
-    const srcs = orderedSourceTiles.slice(si, si + tileCount);
-    if (srcs.length !== tileCount) return null;
-    si += tileCount;
-    result.push({ token: tok, srcs, src: srcs[0] });
-  }
-
-  if (si !== orderedSourceTiles.length) return null;
-  return result;
-}
-
-function eqPositionsFromTokens(tokens) {
-  const pos = [];
-  for (let i = 0; i < tokens.length; i++) if (tokens[i] === '=') pos.push(i);
-  return pos;
-}
-
-function pickFixedIndicesHeuristic(equationTokens, tilePerToken, fixedCount) {
-  // Must include all '=' token positions.
-  const must = new Set(eqPositionsFromTokens(equationTokens));
-  const remaining = fixedCount - must.size;
-  if (remaining < 0) return null;
-  if (remaining === 0) return [...must].sort((a, b) => a - b);
-
-  // Candidates: exclude adjacent-to '=' to keep rack less constrained.
-  const excluded = new Set(must);
-  for (const p of must) { excluded.add(p - 1); excluded.add(p + 1); }
-
-  const candidates = [];
-  for (let i = 0; i < equationTokens.length; i++) {
-    if (excluded.has(i)) continue;
-    candidates.push(i);
-  }
-
-  // Score candidates: pin heavy numbers (and some ops) to avoid heavy flooding the rack.
-  const isOpSrc = (src) => OPS_SET.has(src);
-  const isHeavySrc = (src) => HEAVY_SET.has(src);
-
-  const chosen = [];
-  const blocked = new Set();
-
-  const scoreIdx = (i) => {
-    const src = tilePerToken[i]?.srcs?.[0];
-    if (!src) return 0;
-    if (src === '=') return 1000;
-    let s = 0;
-    if (isHeavySrc(src)) s += 40;
-    if (isOpSrc(src)) s += 8;
-    // Prefer keeping multi-digit numbers visible (they consume more rack tiles).
-    if (!isOpSrc(src) && equationTokens[i] !== '=' && String(equationTokens[i]).length >= 2) s += 6;
-    return s + Math.random(); // tie-break
-  };
-
-  // Greedy pick: each step choose best available not blocked.
-  for (let pick = 0; pick < remaining; pick++) {
-    let best = null;
-    for (const idx of candidates) {
-      if (blocked.has(idx)) continue;
-      const s = scoreIdx(idx);
-      if (!best || s > best.s) best = { idx, s };
-    }
-    if (!best) break;
-    chosen.push(best.idx);
-    blocked.add(best.idx - 1); blocked.add(best.idx); blocked.add(best.idx + 1);
-  }
-
-  if (chosen.length < remaining) return null;
-  return [...must, ...chosen].sort((a, b) => a - b);
-}
-
-function boardIndexToRowCol(idx) {
-  return { r: (idx / BOARD_COLS) | 0, c: idx % BOARD_COLS };
-}
-
-function scorePlacement(space) {
-  // Lower is better.
-  let penalty = 0;
-
-  // Penalize rows that have too many visible operators.
-  for (let r = 0; r < BOARD_ROWS; r++) {
-    let opCount = 0;
-    let nonNull = 0;
-    for (let c = 0; c < BOARD_COLS; c++) {
-      const t = space[r * BOARD_COLS + c];
-      if (t == null) continue;
-      nonNull++;
-      if (OPS_SET.has(t)) opCount++;
-      if (t === '?') opCount += 0.4; // '?' often becomes an operator
-    }
-    if (nonNull === 0) continue;
-    if (opCount >= 3) penalty += 8 * (opCount - 2);
-    if (opCount === 2) penalty += 1.5;
-  }
-
-  // Penalize adjacent operators (including '=' somewhat).
-  for (let i = 0; i < space.length; i++) {
-    const t = space[i];
-    if (t == null) continue;
-    const { r, c } = boardIndexToRowCol(i);
-    const neigh = [];
-    if (c > 0) neigh.push(space[i - 1]);
-    if (c < BOARD_COLS - 1) neigh.push(space[i + 1]);
-    if (r > 0) neigh.push(space[i - BOARD_COLS]);
-    if (r < BOARD_ROWS - 1) neigh.push(space[i + BOARD_COLS]);
-    const isOpLike = (x) => x != null && (OPS_SET.has(x) || x === '=');
-    if (isOpLike(t)) {
-      const adj = neigh.filter(isOpLike).length;
-      penalty += adj * 0.9;
-    }
-  }
-
-  return penalty;
-}
-
-/**
- * optimizeBoardLayout(board)
- *
- * Choose equationStart (and keep fixedIndices) to balance visible tiles:
- * - spread equations across the 3x5 grid
- * - avoid rows with operator-heavy visibility
- */
-function optimizeBoardLayout(board) {
-  const { totalTile, fixedIndices } = board;
-  const maxStart = BOARD_SIZE - totalTile;
-
-  let best = null;
-  for (let start = 0; start <= maxStart; start++) {
-    const space = Array(BOARD_SIZE).fill(null);
-    fixedIndices.forEach((slotIdx) => {
-      space[start + slotIdx] = board.tileSlots?.[slotIdx]?.src ?? null;
-    });
-    const s = scorePlacement(space);
-    if (!best || s < best.score) best = { start, space, score: s };
-  }
-
-  return {
-    ...board,
-    equationStart: best ? best.start : board.equationStart,
-    space: best ? best.space : board.space,
-    layoutScore: best ? best.score : undefined,
-  };
-}
-
-/**
- * buildBoard(eq, orderedSourceTiles, cfg, meta)
- *
- * Construct the public board structure.
- */
-function buildBoard(eq, orderedSourceTiles, cfg, meta) {
-  const { mode, totalTile, eqCount } = meta;
-  const fixedCount = totalTile - RACK_SIZE;
-
-  const equationTokens = tokenizeEquation(eq);
-  if (!equationTokens) return null;
-  const tilePerToken = buildTilePerToken(equationTokens, orderedSourceTiles);
-  if (!tilePerToken) return null;
-
-  // Fixed indices selection (token indices)
-  const fixedTokenIndices = pickFixedIndicesHeuristic(equationTokens, tilePerToken, fixedCount);
-  if (!fixedTokenIndices) return null;
-
-  const fixedTokenSet = new Set(fixedTokenIndices);
-
-  // Build per-tile sequence (length = totalTile), each entry: { tokenIndex, tileIndexInToken, src }
-  const tileSlots = [];
-  tilePerToken.forEach((tt, ti) => {
-    tt.srcs.forEach((src, k) => {
-      tileSlots.push({ tokenIndex: ti, tileOffset: k, src });
-    });
-  });
-  if (tileSlots.length !== totalTile) return null;
-
-  // Decide which *tiles* are fixed: choose tiles whose tokenIndex in fixedTokenSet.
-  const fixedTileIndices = [];
-  for (let i = 0; i < tileSlots.length; i++) {
-    if (fixedTokenSet.has(tileSlots[i].tokenIndex)) fixedTileIndices.push(i);
-  }
-  if (fixedTileIndices.length !== fixedCount) return null;
-
-  // Rack = remaining tiles
-  const fixedTileSet = new Set(fixedTileIndices);
-  const rack = tileSlots
-    .filter((_, i) => !fixedTileSet.has(i))
-    .map(s => s.src);
-
-  if (rack.some(t => t === '=')) return null;
-  if (rack.length !== RACK_SIZE) return null;
-
-  // Map from tile index back to “slot in equation” (0..totalTile-1)
-  const maxStart = BOARD_SIZE - totalTile;
-  const equationStart = 0 | (Math.random() * (maxStart + 1));
-  const space = Array(BOARD_SIZE).fill(null);
-
-  fixedTileIndices.forEach((ti) => {
-    const boardPos = equationStart + ti;
-    space[boardPos] = tileSlots[ti].src;
-  });
-
-  const baseBoard = {
-    mode,
-    space,
-    equationStart,
-    equation: eq,
-    equationTokens: equationTokens.map((t, ti) => ({
-      token: t,
-      tokenIndex: ti,
-    })),
-    fixedIndices: fixedTileIndices, // now tile-slot indices (0..totalTile-1)
-    rack,
-    analysis: analyzeTiles(orderedSourceTiles),
-    tilePerToken,
-    tileSlots,
-    totalTile,
-    eqCount,
-  };
-
-  const optimized = optimizeBoardLayout(baseBoard);
-
-  const {
-    tilePerToken: _tpt,
-    tileSlots: _slots,
-    totalTile: _tt,
-    eqCount: _eqc,
-    layoutScore,
-    ...publicBoard
-  } = optimized;
-
-  return { ...publicBoard, layoutScore };
-}
-
-// =================================================================
-// SECTION 7 — DIFFICULTY ANALYZER
-// =================================================================
-
-/**
- * scoreEquationDifficulty(eq)
- *
- * Returns 1–10 based on:
- * - operator complexity (÷ > × > − > +)
- * - number sizes (more digits / larger magnitudes)
- * - equation length / operation count
- */
-function scoreEquationDifficulty(eq) {
-  const toks = tokenizeEquation(eq) || [];
-  let opScore = 0;
-  let ops = 0;
-  let digits = 0;
-  let maxNum = 0;
-
-  for (const tok of toks) {
-    if (OPS_ALL.includes(tok)) {
-      ops++;
-      if (tok === '+') opScore += 1;
-      else if (tok === '-') opScore += 2;
-      else if (tok === '×') opScore += 3;
-      else if (tok === '÷') opScore += 4;
-    } else if (tok === '=') {
-      opScore += 0.5;
-    } else {
-      const n = parseInt(tok, 10);
-      if (!Number.isNaN(n)) {
-        maxNum = Math.max(maxNum, n);
-        digits += String(Math.abs(n)).length;
-      }
-    }
-  }
-
-  const len = toks.length;
-  const sizeScore = Math.log10(maxNum + 1) * 3 + (digits >= 6 ? 2 : digits >= 4 ? 1 : 0);
-  const complexity = opScore + ops * 0.8 + (len >= 11 ? 2 : len >= 9 ? 1 : 0) + sizeScore;
-
-  // Map to 1–10 (tuned empirically to typical puzzle sizes)
-  const raw = Math.round(1 + (complexity / 6.5) * 9);
-  return clamp(raw, 1, 10);
-}
-
-// =================================================================
-// SECTION 8 — PUBLIC API
-// =================================================================
-
-function resolveEqualCount(mode, cfg) {
-  const range = toRange(cfg.equalCount);
-  if (mode === 'cross') {
-    if (range && (range[0] > 1 || range[1] < 1)) {
-      throw new Error('Cross mode always has exactly 1 "=" in the equation.');
-    }
-    return 1;
-  }
-  // expand: 1 or 2; default 80% → 2
-  if (!range) return Math.random() < 0.8 ? 2 : 1;
-  const lo = clamp(range[0], 1, 2);
-  const hi = clamp(range[1], 1, 2);
-  if (lo === hi) return lo;
-  return Math.random() < 0.75 ? 2 : 1;
-}
-
-function validateConfig(cfg) {
-  const { mode, totalTile } = cfg;
-  if (!['cross', 'expand', 'plain'].includes(mode)) throw new Error('mode must be "cross", "expand", or "plain"');
   if (mode === 'plain') {
-    if (totalTile < 8 || totalTile > 15) throw new Error('Plain mode totalTile must be 8–15');
-  } else {
-    if (totalTile < 8 || totalTile > 15) throw new Error('totalTile must be 8–15');
-  }
-  if (mode === 'expand' && totalTile < 11) throw new Error('Expand mode requires totalTile ≥ 11');
-
-  const eqRange = toRange(cfg.equalCount);
-  if (eqRange) {
-    const lo = clamp(eqRange[0], 1, 2);
-    const hi = clamp(eqRange[1], 1, 2);
-    if (mode === 'cross' && (lo > 1 || hi < 1)) throw new Error('Cross mode requires equalCount to include 1');
-  }
-}
-
-// =================================================================
-// SECTION 7 — REALISTIC BOARD PLACEMENT
-// (selectRealisticPlacement, selectLockPositions, passesRealismFilter
-//  are imported from crossBingoPlacement.js above)
-// =================================================================
-
-/**
- * generateBingo(cfg)
- *
- * v5 strategy:
- * - Construct a seed equation first (small, guaranteed-valid).
- * - Expand tile multiset with weighted flexible tiles (reduces DFS branching risk of "dead" tiles).
- * - Run DFS validator on the final tile multiset to ensure at least one complete solution exists.
- * - Build and optimize board layout (expand) or return cross-bingo board (cross).
- * - Score difficulty.
- */
-export function generateBingo(cfg) {
-  validateConfig(cfg);
-  const { mode, totalTile } = cfg;
-
-  const DFS_RESULTS_LIMIT = 1;
-
-  // ── Pre-commit opTarget once per puzzle ───────────────────────────────────
-  // Without this, DFS survivorship bias causes 2-op to dominate: each retry
-  // re-rolls opTarget randomly, but opTarget=2 has a much higher DFS success
-  // rate than 1 or 3, so it wins almost every time.
-  const eqCountGuess = mode === 'cross' ? 1 : 2;
-  const opHiClamp = Math.min(6, totalTile - eqCountGuess - 2);
-  const opRange = toRange(cfg.operatorCount);
-  const rawOpLo = opRange ? opRange[0] : 2;
-  const rawOpHi = opRange ? opRange[1] : 2;
-  const opLo = Math.max(1, Math.min(rawOpLo, opHiClamp));
-  const opHi = Math.min(opHiClamp, Math.max(rawOpHi, opLo));
-  const committedOpCount = randInt(opLo, opHi);
-
-  // ── Pre-commit operator type for 1-op puzzles ─────────────────────────────
-  // Without this, ×/÷ tiles have lower DFS success rates (fewer valid integer
-  // factorizations in the random digit pool) → +/- dominate by survivorship.
-  // We commit to one operator type and retry hard before falling back.
-  let cfgCommitted = { ...cfg, operatorCount: [committedOpCount, committedOpCount] };
-  if (committedOpCount === 1 && !cfg.operatorSpec) {
-    // Shuffle all 4 core ops to pick uniformly; slight weight-up × and ÷
-    // to counteract their naturally lower DFS success rate.
-    const picked = weightedSample(['+', '-', '×', '÷'], [3, 3, 5, 5]);
-    cfgCommitted = {
-      ...cfgCommitted,
-      operatorSpec: { '+': [0,0], '-': [0,0], '×': [0,0], '÷': [0,0], '+/-': [0,0], '×/÷': [0,0], [picked]: [1,1] },
+    const solutionTiles = chosen.tiles;
+    const boardSlots = solutionTiles.map(() => ({
+      tile: null, isLocked: false, resolvedValue: null, slotType: 'px1',
+    }));
+    return {
+      mode: 'plain',
+      boardSlots,
+      rackTiles: shuffle([...solutionTiles]),
+      solutionTiles,
+      equation: chosen.eq,
+      totalTile,
+      eqCount,
+      difficulty,
+      generatorVersion: GENERATOR_VERSION,
+      tileCounts,
     };
   }
 
-  // ÷ / × with 1 op need more retries (fewer valid tile combos pass DFS).
+  if (mode === 'cross') {
+    const solutionTiles = chosen.tiles;
+    const lockCount = Math.max(0, totalTile - RACK_SIZE);
+    const resolvedTiles = computeResolvedTiles(solutionTiles, chosen.eq);
+    const noBonus = cfg.noBonus === true;
+    let placement, lockPositions;
+    let tries = 0;
+    do {
+      placement = selectRealisticPlacement(totalTile);
+      const adj = applyTileAssignmentToPlacement(solutionTiles, placement, cfg.tileAssignmentSpec);
+      lockPositions = selectLockPositions(totalTile, lockCount, adj);
+      tries++;
+    } while (!passesRealismFilter(placement) && tries < 10);
+    const { cells } = placement;
+    const lockSet = new Set(lockPositions);
+    const board = Array.from({ length: 15 }, () => Array(15).fill(null));
+    cells.forEach((cell, i) => { board[cell.r][cell.c] = solutionTiles[i]; });
+    return {
+      mode: 'cross',
+      noBonus,
+      board,
+      boardSlots: solutionTiles.map((tile, i) => ({
+        tile: lockSet.has(i) ? tile : null,
+        isLocked: lockSet.has(i),
+        resolvedValue: lockSet.has(i) && WILDS_SET.has(tile) ? resolvedTiles[i] : null,
+        slotType: noBonus ? 'px1' : cells[i].type,
+      })),
+      placementRow: placement.rowIdx,
+      placementCol: placement.colStart,
+      placementDir: placement.dir,
+      rackTiles: shuffle(solutionTiles.filter((_, i) => !lockSet.has(i))),
+      solutionTiles,
+      equation: chosen.eq,
+      totalTile,
+      eqCount,
+      difficulty,
+      generatorVersion: GENERATOR_VERSION,
+      tileCounts,
+    };
+  }
+
+  // expand mode
+  const board = buildBoard(chosen.eq, chosen.tiles, cfg, { mode, totalTile, eqCount });
+  if (!board) return null;
+  return { ...board, eqCount, difficulty, generatorVersion: GENERATOR_VERSION, seedEquation, tileCounts };
+}
+
+// =================================================================
+// SECTION 6 — DETERMINISTIC GUARANTEE LAYER
+// =================================================================
+
+function forceGuaranteedPuzzle(cfg) {
+  const { mode, totalTile } = cfg;
+  const poolDef = cfg.poolDef ?? POOL_DEF;
+  const eqRange = toRange(cfg.equalCount);
+  const targetEqCount = eqRange ? clamp(eqRange[0], 1, EQ_MAX_LOCAL) : 1;
+
+  const templates = {
+    '1_9':  { eq: '6-1-1-1=3',           tiles: ['6','-','1','-','1','-','1','=','3'],                                         eqCount: 1 },
+    '1_10': { eq: '9+9+1+2=21',           tiles: ['9','+','9','+','1','+','2','=','2','1'],                                     eqCount: 1 },
+    '1_11': { eq: '9-1-1-1-1=5',          tiles: ['9','-','1','-','1','-','1','-','1','=','5'],                                 eqCount: 1 },
+    '2_9':  { eq: '3+4=7=7',              tiles: ['3','+','4','=','7','=','7'],                                                 eqCount: 2 },
+    '2_10': { eq: '2+3=5=5',              tiles: ['2','+','3','=','5','=','5'],                                                 eqCount: 2 },
+    '2_11': { eq: '1+2+3=6=6',            tiles: ['1','+','2','+','3','=','6','=','6'],                                         eqCount: 2 },
+    '2_12': { eq: '3+4+5=12=12',          tiles: ['3','+','4','+','5','=','12','=','1','2'],                                    eqCount: 2 },
+    '2_13': { eq: '1+2+3+4=10=10',        tiles: ['1','+','2','+','3','+','4','=','10','=','1','0'],                            eqCount: 2 },
+    '3_8':  { eq: '2=2=2=2',              tiles: ['2','=','2','=','2','=','2'],                                                 eqCount: 3 },
+    '3_9':  { eq: '1+2=3=3=3',            tiles: ['1','+','2','=','3','=','3','=','3'],                                         eqCount: 3 },
+    '3_10': { eq: '5=5=5=5',              tiles: ['5','=','5','=','5','=','5'],                                                 eqCount: 3 },
+    '3_11': { eq: '1+4=5=5=5',            tiles: ['1','+','4','=','5','=','5','=','5'],                                         eqCount: 3 },
+    '3_12': { eq: '2+5=7=7=7',            tiles: ['2','+','5','=','7','=','7','=','7'],                                         eqCount: 3 },
+    '3_13': { eq: '1+2+3=6=6=6',          tiles: ['1','+','2','+','3','=','6','=','6','=','6'],                                 eqCount: 3 },
+    '3_14': { eq: '3+4+2=9=9=9',          tiles: ['3','+','4','+','2','=','9','=','9','=','9'],                                 eqCount: 3 },
+    '3_15': { eq: '1+2+3+4=10=10=10',     tiles: ['1','+','2','+','3','+','4','=','10','=','1','0','=','10'],                   eqCount: 3 },
+  };
+
+  const templateKey = `${targetEqCount}_${totalTile}`;
+  const tmpl = templates[templateKey];
+  if (tmpl && tmpl.tiles.length === totalTile) {
+    const quickCounts = {};
+    tmpl.tiles.forEach(t => { quickCounts[t] = (quickCounts[t] || 0) + 1; });
+    if (withinPoolLimits(quickCounts, poolDef)) {
+      const result = _buildBoardResult(mode, { eq: tmpl.eq, tiles: tmpl.tiles }, quickCounts, tmpl.eq, cfg, totalTile, tmpl.eqCount);
+      if (result) return result;
+    }
+  }
+
+  const safeCfg = {
+    mode,
+    totalTile,
+    operatorCount: targetEqCount >= 3 ? [0, 2] : [1, 1],
+    equalCount: [targetEqCount, targetEqCount],
+    wildcardCount: 0,
+    blankCount: 0,
+    heavyCount: null,
+    operatorSpec: null,
+    tileAssignmentSpec: cfg.tileAssignmentSpec ?? null,
+    poolDef,
+  };
+
+  for (let retry = 0; retry < 30; retry++) {
+    const built = equationFirstBuilder(totalTile, safeCfg, targetEqCount, poolDef);
+    if (!built) continue;
+    const { tileCounts, seedEquation } = built;
+    const srcTiles = equationToSourceTiles(seedEquation);
+    if (!srcTiles || srcTiles.length !== totalTile) continue;
+    if (!withinPoolLimits(tileCounts, poolDef)) continue;
+    const result = _buildBoardResult(mode, { eq: seedEquation, tiles: srcTiles }, tileCounts, seedEquation, cfg, totalTile, targetEqCount);
+    if (result) return result;
+  }
+
+  const broaderCfg = { ...safeCfg, operatorCount: [0, 3] };
+  for (let retry = 0; retry < 60; retry++) {
+    const built = equationFirstBuilder(totalTile, broaderCfg, targetEqCount, poolDef);
+    if (!built) continue;
+    const { tileCounts, seedEquation } = built;
+    const srcTiles = equationToSourceTiles(seedEquation);
+    if (!srcTiles || srcTiles.length !== totalTile) continue;
+    if (!withinPoolLimits(tileCounts, poolDef)) continue;
+    const result = _buildBoardResult(mode, { eq: seedEquation, tiles: srcTiles }, tileCounts, seedEquation, cfg, totalTile, targetEqCount);
+    if (result) return result;
+  }
+
+  // ── Deterministic construction ──────────────────────────────────────
+  let eq, tiles;
+
+  if (targetEqCount === 3) {
+    for (let v = 1; v <= 20; v++) {
+      const vt = numTiles(v);
+      const bareTotal = 3 * vt + 3;
+      const exprBudget = totalTile - bareTotal;
+
+      if (exprBudget === vt) {
+        eq = `${v}=${v}=${v}=${v}`;
+        tiles = [];
+        const vStr = String(v);
+        for (let p = 0; p < 4; p++) {
+          if (vt === 1) tiles.push(vStr);
+          else for (const ch of vStr) tiles.push(ch);
+          if (p < 3) tiles.push('=');
+        }
+        if (tiles.length === totalTile) break;
+      }
+
+      if (exprBudget >= 3 && exprBudget <= 9) {
+        const numCount = Math.ceil(exprBudget / 2);
+        const opCount  = exprBudget - numCount;
+        if (opCount < 1) continue;
+        const lastNum = v - (numCount - 1);
+        if (lastNum >= 1 && lastNum <= 9) {
+          const nums = [...Array(numCount - 1).fill(1), lastNum];
+          const lhsStr = nums.join('+');
+          if (evalExpr(lhsStr) === v) {
+            eq = `${lhsStr}=${v}=${v}=${v}`;
+            tiles = [];
+            for (let i = 0; i < nums.length; i++) {
+              tiles.push(String(nums[i]));
+              if (i < nums.length - 1) tiles.push('+');
+            }
+            tiles.push('=');
+            const vStr = String(v);
+            for (let p = 0; p < 3; p++) {
+              if (vt === 1) tiles.push(vStr);
+              else for (const ch of vStr) tiles.push(ch);
+              if (p < 2) tiles.push('=');
+            }
+            if (tiles.length === totalTile) break;
+            else { eq = null; tiles = null; }
+          }
+        }
+      }
+    }
+  } else if (targetEqCount === 2) {
+    for (let v = 1; v <= 9; v++) {
+      const bareTiles = 2 + 2;
+      const exprBudget = totalTile - bareTiles;
+      if (exprBudget < 1) continue;
+      const numCount = Math.ceil(exprBudget / 2);
+      const opCount  = exprBudget - numCount;
+      if (opCount < 0) continue;
+      if (opCount === 0 && numCount === 1) {
+        eq = `${v}=${v}=${v}`;
+        tiles = [String(v), '=', String(v), '=', String(v)];
+        if (tiles.length === totalTile) break;
+      }
+      const lastNum = v - (numCount - 1);
+      if (lastNum >= 1 && lastNum <= 9 && opCount >= 1) {
+        const nums = [...Array(numCount - 1).fill(1), lastNum];
+        const lhsStr = nums.join('+');
+        eq = `${lhsStr}=${v}=${v}`;
+        tiles = [];
+        for (let i = 0; i < nums.length; i++) {
+          tiles.push(String(nums[i]));
+          if (i < nums.length - 1) tiles.push('+');
+        }
+        tiles.push('=', String(v), '=', String(v));
+        if (tiles.length === totalTile) break;
+        else { eq = null; tiles = null; }
+      }
+    }
+  }
+
+  if (!eq || !tiles || tiles.length !== totalTile) {
+    if ((totalTile - 1) % 2 === 0) {
+      const N = (totalTile - 1) / 2;
+      if (N >= 2 && N <= 9) {
+        tiles = [];
+        for (let i = 0; i < N; i++) {
+          tiles.push('1');
+          if (i < N - 1) tiles.push('+');
+        }
+        tiles.push('=');
+        tiles.push(String(N));
+        eq = tiles.join('');
+      }
+    }
+  }
+
+  if (!eq || !tiles || tiles.length !== totalTile) {
+    if ((totalTile - 2) % 2 === 0) {
+      const N = (totalTile - 2) / 2;
+      if (N >= 1) {
+        const target = 21;
+        const fixed  = N - 1;
+        const last   = target - fixed;
+        if (last >= 1 && last <= 9) {
+          const nums = [...Array(fixed).fill(1), last];
+          const lhs  = nums.join('+');
+          eq = `${lhs}=${target}`;
+          tiles = [];
+          for (let i = 0; i < N; i++) {
+            tiles.push(String(nums[i]));
+            if (i < N - 1) tiles.push('+');
+          }
+          tiles.push('=', '2', '1');
+        }
+      }
+    }
+  }
+
+  // Absolute last resort
+  if (!eq || !tiles || tiles.length !== totalTile) {
+    const baseTiles = ['1', '+', '2', '=', '3'];
+    tiles = [...baseTiles];
+    eq = '1+2=3';
+    while (tiles.length < totalTile - 1) tiles.splice(tiles.indexOf('='), 0, '+', '1');
+    while (tiles.length > totalTile) {
+      const eqIdx = tiles.lastIndexOf('=');
+      if (eqIdx > 2) tiles.splice(eqIdx - 2, 2);
+      else { tiles = tiles.slice(0, totalTile); break; }
+    }
+    eq = tiles.join('').replace(/([+\-×÷=])/g, '$1');
+    const eqIdx = tiles.lastIndexOf('=');
+    if (eqIdx > 0) {
+      const lhsTiles = tiles.slice(0, eqIdx);
+      const lhsStr   = lhsTiles.join('');
+      const lhsVal   = evalExpr(lhsStr);
+      if (lhsVal !== null && lhsVal >= 0 && lhsVal <= 9) {
+        tiles = [...lhsTiles, '=', String(lhsVal)];
+        eq = lhsStr + '=' + lhsVal;
+      }
+    }
+    while (tiles.length < totalTile) tiles.push('1');
+    tiles = tiles.slice(0, totalTile);
+  }
+
+  const tileCounts = {};
+  tiles.forEach(t => { tileCounts[t] = (tileCounts[t] || 0) + 1; });
+
+  if (!withinPoolLimits(tileCounts, poolDef)) {
+    for (let retry = 0; retry < 60; retry++) {
+      const built = equationFirstBuilder(totalTile, broaderCfg, targetEqCount, poolDef);
+      if (!built) continue;
+      const { tileCounts: tc2, seedEquation: eq2 } = built;
+      const srcTiles = equationToSourceTiles(eq2);
+      if (!srcTiles || srcTiles.length !== totalTile) continue;
+      if (!withinPoolLimits(tc2, poolDef)) continue;
+      const result = _buildBoardResult(mode, { eq: eq2, tiles: srcTiles }, tc2, eq2, cfg, totalTile, targetEqCount);
+      if (result) return result;
+    }
+    throw new Error('Unable to generate puzzle within configured poolDef constraints.');
+  }
+
+  const difficulty    = scoreEquationDifficulty(eq);
+  const finalEqCount  = (eq.match(/=/g) || []).length;
+
+  if (mode === 'plain') {
+    return {
+      mode: 'plain',
+      boardSlots: tiles.map(() => ({ tile: null, isLocked: false, resolvedValue: null, slotType: 'px1' })),
+      rackTiles: shuffle([...tiles]),
+      solutionTiles: tiles,
+      equation: eq,
+      totalTile,
+      eqCount: finalEqCount,
+      difficulty,
+      generatorVersion: GENERATOR_VERSION,
+      tileCounts,
+    };
+  }
+
+  if (mode === 'cross') {
+    const lockCount = Math.max(0, totalTile - RACK_SIZE);
+    const noBonus   = cfg.noBonus === true;
+    let placement, lockPositions;
+    let tries = 0;
+    do {
+      placement    = selectRealisticPlacement(totalTile);
+      lockPositions = selectLockPositions(totalTile, lockCount, placement);
+      tries++;
+    } while (!passesRealismFilter(placement) && tries < 10);
+    const { cells } = placement;
+    const lockSet   = new Set(lockPositions);
+    const board     = Array.from({ length: 15 }, () => Array(15).fill(null));
+    cells.forEach((cell, i) => { if (i < tiles.length) board[cell.r][cell.c] = tiles[i]; });
+    return {
+      mode: 'cross',
+      noBonus,
+      board,
+      boardSlots: tiles.map((tile, i) => ({
+        tile: lockSet.has(i) ? tile : null,
+        isLocked: lockSet.has(i),
+        resolvedValue: null,
+        slotType: noBonus ? 'px1' : (cells[i]?.type ?? 'px1'),
+      })),
+      placementRow: placement.rowIdx,
+      placementCol: placement.colStart,
+      placementDir: placement.dir,
+      rackTiles: shuffle(tiles.filter((_, i) => !lockSet.has(i))),
+      solutionTiles: tiles,
+      equation: eq,
+      totalTile,
+      eqCount: finalEqCount,
+      difficulty,
+      generatorVersion: GENERATOR_VERSION,
+      tileCounts,
+    };
+  }
+
+  // expand mode
+  const board = buildBoard(eq, tiles, cfg, { mode, totalTile, eqCount: finalEqCount });
+  if (board) return { ...board, difficulty, generatorVersion: GENERATOR_VERSION, seedEquation: eq, tileCounts };
+
+  return {
+    mode,
+    boardSlots: tiles.map(() => ({ tile: null, isLocked: false, resolvedValue: null, slotType: 'px1' })),
+    rackTiles: shuffle([...tiles]),
+    solutionTiles: tiles,
+    equation: eq,
+    totalTile,
+    eqCount: finalEqCount,
+    difficulty,
+    generatorVersion: GENERATOR_VERSION,
+    tileCounts,
+  };
+}
+
+// =================================================================
+// SECTION 7 — PUBLIC API
+// =================================================================
+
+export function generateBingo(cfg) {
+  validateConfig(cfg);
+  validateDetailedConstraints(cfg);
+  const { mode, totalTile } = cfg;
+  const hasCustomConstraints = Boolean(
+    cfg.operatorCount ||
+    cfg.heavyCount ||
+    cfg.wildcardCount ||
+    cfg.blankCount ||
+    cfg.equalCount ||
+    cfg.operatorSpec ||
+    cfg.tileAssignmentSpec ||
+    cfg.poolDef
+  );
+  const startMs     = Date.now();
+  const wallBudgetMs = hasCustomConstraints ? Number.POSITIVE_INFINITY : (totalTile <= 11 ? 35 : 55);
+  const timedOut    = () => (Date.now() - startMs) > wallBudgetMs;
+  const poolDefResolved = cfg.poolDef ?? POOL_DEF;
+
+  const tryBuildResultFromBuilt = (built, eqCount, boardCfg = cfg) => {
+    if (!built) return null;
+    const { tileCounts, seedEquation } = built;
+    const analysis = analyzeCounts(tileCounts);
+    let chosen;
+    if (analysis.wilds === 0) {
+      const srcTiles = equationToSourceTiles(seedEquation);
+      if (!srcTiles || srcTiles.length !== totalTile) return null;
+      chosen = { eq: seedEquation, tiles: srcTiles };
+    } else {
+      const found = _dfsLookupOrRun(tileCounts, eqCount);
+      if (!found.length) return null;
+      chosen = found.reduce((best, c) => {
+        const flex     = c.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
+        const bestFlex = best.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
+        return flex < bestFlex ? c : best;
+      });
+    }
+    return _buildBoardResult(mode, chosen, tileCounts, seedEquation, boardCfg, totalTile, eqCount);
+  };
+
+  if (!isConfigFeasible(cfg)) {
+    if (hasCustomConstraints) {
+      throw new Error(`Selected advanced constraints are structurally infeasible for this tile count. Reason: ${explainConstraintFailure(cfg)}`);
+    }
+    const fallbackCfg = sanitizeConfigForFallback(cfg);
+    if (!isConfigFeasible(fallbackCfg)) return forceGuaranteedPuzzle(fallbackCfg);
+    return generateBingo(fallbackCfg);
+  }
+
+  const eqRange          = toRange(cfg.equalCount);
+  const eqCountForClamp  = eqRange ? Math.min(eqRange[1], EQ_MAX_LOCAL) : 1;
+
+  const opHiClamp = Math.min(6, Math.floor((totalTile - 2 * eqCountForClamp - 1) / 2));
+  const opRange   = toRange(cfg.operatorCount);
+  const rawOpLo   = opRange ? opRange[0] : (eqCountForClamp >= 3 ? 0 : 1);
+  const rawOpHi   = opRange ? opRange[1] : 3;
+  const opLo      = Math.max(0, Math.min(rawOpLo, opHiClamp));
+  const opHi      = Math.min(opHiClamp, Math.max(rawOpHi, opLo));
+  let committedOpCount = opLo <= opHi ? randInt(opLo, opHi) : opLo;
+
+  // Small board bias for fewer operators
+  if (!cfg.operatorCount && totalTile <= 11 && opHi > opLo) {
+    const opCandidates = [];
+    const opWeights    = [];
+    for (let n = opLo; n <= opHi; n++) {
+      const numBudget = totalTile - eqCountForClamp - n;
+      const numSlots  = n + eqCountForClamp + 1;
+      const slack     = Math.max(0, numBudget - numSlots);
+      const base      = Math.max(1, 4 - (n - opLo));
+      opCandidates.push(n);
+      opWeights.push(base + slack);
+    }
+    if (opCandidates.length > 0) committedOpCount = weightedSample(opCandidates, opWeights);
+  }
+
+  let cfgCommitted = { ...cfg, operatorCount: [committedOpCount, committedOpCount] };
+
+  // BUGFIX: Pre-commit operator weights — balanced for all 4 operators.
+  // All operators have similar success rates now that backward-solve works.
+  if (committedOpCount === 1 && !cfg.operatorSpec) {
+    const picked = weightedSample(['+', '-', '×', '÷'], [4, 4, 4, 4]);
+    cfgCommitted = {
+      ...cfgCommitted,
+      operatorSpec: {
+        '+': [0,0], '-': [0,0], '×': [0,0], '÷': [0,0],
+        '+/-': [0,0], '×/÷': [0,0],
+        [picked]: [1,1],
+      },
+    };
+  }
+
   const committedOp1 = cfgCommitted.operatorSpec
     ? Object.keys(cfgCommitted.operatorSpec).find(k => {
         const r = toRange(cfgCommitted.operatorSpec[k]);
         return r && r[0] >= 1;
       })
     : null;
-  const MAX_RETRIES = (committedOp1 === '÷' || committedOp1 === '×') ? 360 : 180;
+
+  const MAX_RETRIES = eqCountForClamp >= 3 ? 30
+    : (committedOp1 === '÷' || committedOp1 === '×') ? 22
+    : 14;
+
+  const eqRangeCommitted = toRange(cfgCommitted.equalCount);
+  const eqLoCommitted    = eqRangeCommitted ? clamp(eqRangeCommitted[0], 1, EQ_MAX_LOCAL) : 1;
+  const eqHiCommitted    = eqRangeCommitted ? clamp(eqRangeCommitted[1], 1, EQ_MAX_LOCAL) : 1;
+  const _eqCandidatesLen = eqHiCommitted - eqLoCommitted + 1;
+  const eqCandidatesMain = (Number.isFinite(_eqCandidatesLen) && _eqCandidatesLen > 0)
+    ? Array.from({ length: _eqCandidatesLen }, (_, i) => eqLoCommitted + i)
+    : [1];
 
   for (let retry = 0; retry < MAX_RETRIES; retry++) {
-    const eqCount = resolveEqualCount(mode, cfgCommitted);
+    if (timedOut()) break;
+    const eqCount = eqCandidatesMain.length === 1
+      ? eqCandidatesMain[0]
+      : eqCandidatesMain[0 | (Math.random() * eqCandidatesMain.length)];
 
-    // Tile Composition Builder + Weighted Expansion
-    // cfg.poolDef overrides the default tile pool (used when a custom tile set is selected)
-    const built = hybridTileBuilder(totalTile, cfgCommitted, eqCount, cfgCommitted.poolDef ?? POOL_DEF);
+    // Per-retry operator diversification when user didn't pin operatorSpec.
+    // Without this, +/- combinations dominate because constructEquationV6
+    // picks additive operators far more often than ×/÷.
+    let tryCfg = cfgCommitted;
+    if (!cfg.operatorSpec) {
+      if (committedOpCount === 2) {
+        const r = Math.random();
+        const ops = r < 0.30
+          ? [_rndAdd(), _rndAdd()]                                                          // 30% both +/-
+          : r < 0.70
+          ? (Math.random() < 0.5 ? [_rndAdd(), _rndMul()] : [_rndMul(), _rndAdd()])       // 40% mixed
+          : [_rndMul(), _rndMul()];                                                         // 30% both ×/÷
+        tryCfg = { ...cfgCommitted, operatorSpec: _buildOpSpec(ops) };
+      } else if (committedOpCount === 3) {
+        const r = Math.random();
+        const ops = r < 0.20
+          ? [_rndAdd(), _rndAdd(), _rndAdd()]                                               // 20% all +/-
+          : r < 0.65
+          ? shuffle([_rndAdd(), _rndAdd(), _rndMul()])                                      // 45% two +/- one ×/÷
+          : shuffle([_rndAdd(), _rndMul(), _rndMul()]);                                     // 35% one +/- two ×/÷
+        tryCfg = { ...cfgCommitted, operatorSpec: _buildOpSpec(ops) };
+      }
+    }
+
+    const built = equationFirstBuilder(totalTile, tryCfg, eqCount, tryCfg.poolDef ?? POOL_DEF);
     if (!built) continue;
 
-    const { tileCounts, seedEquation } = built;
-
-    // DFS Validator (existing solver) — find at least one complete solution.
-    const found = findEquationsFromTiles({ ...tileCounts }, eqCount, DFS_RESULTS_LIMIT, { maxDigitLen: 3 });
-    if (!found.length) continue;
-
-    // Prefer a "cleaner" equation if multiple solutions exist:
-    // - fewer '?' sources, fewer choice tiles, and moderate difficulty
-    const ranked = [...found].sort((a, b) => {
-      const ax = analyzeTiles(a.tiles);
-      const bx = analyzeTiles(b.tiles);
-      const aFlex = (a.tiles.filter(t => t === '?').length) + (a.tiles.filter(t => t === '+/-' || t === '×/÷').length);
-      const bFlex = (b.tiles.filter(t => t === '?').length) + (b.tiles.filter(t => t === '+/-' || t === '×/÷').length);
-      if (aFlex !== bFlex) return aFlex - bFlex;
-      if (ax.ops !== bx.ops) return ax.ops - bx.ops;
-      return a.eq.length - b.eq.length;
-    });
-
-    const chosen = ranked[0];
-    const difficulty = scoreEquationDifficulty(chosen.eq);
-
-    if (mode === 'plain') {
-      const solutionTiles = chosen.tiles;
-      const rackTiles = shuffle([...solutionTiles]);
-      const boardSlots = solutionTiles.map(() => ({
-        tile: null,
-        isLocked: false,
-        resolvedValue: null,
-        slotType: 'px1',
-      }));
-      return {
-        mode: 'plain',
-        boardSlots,
-        rackTiles,
-        solutionTiles,
-        equation: chosen.eq,
-        totalTile,
-        difficulty,
-        generatorVersion: GENERATOR_VERSION,
-        tileCounts,
-      };
-    }
-
-    if (mode === 'cross') {
-      const solutionTiles = chosen.tiles;
-      const lockCount = Math.max(0, totalTile - RACK_SIZE);
-
-      // Resolved values for each source tile (used by locked wild tiles for display)
-      const resolvedTiles = computeResolvedTiles(solutionTiles, chosen.eq);
-
-      // ── Placement pipeline (crossBingoPlacement.js) ──────────────────────────
-      let placement, lockPositions;
-      let tries = 0;
-      do {
-        placement = selectRealisticPlacement(totalTile);
-        // Apply per-tile-type lock/rack constraints (from cfg.tileAssignmentSpec)
-        const adjustedPlacement = applyTileAssignmentToPlacement(
-          solutionTiles, placement, cfg.tileAssignmentSpec
-        );
-        lockPositions = selectLockPositions(totalTile, lockCount, adjustedPlacement);
-        tries++;
-      } while (
-        !passesRealismFilter(placement)
-        && tries < 10
-      );
-
-      const { cells } = placement;
-      const lockSet   = new Set(lockPositions);
-
-      // Build 15×15 board grid, placing each solution tile at its cell coordinate
-      const board = Array.from({ length: 15 }, () => Array(15).fill(null));
-      cells.forEach((cell, i) => {
-        board[cell.r][cell.c] = solutionTiles[i];
-      });
-
-      const boardSlots = solutionTiles.map((tile, i) => ({
-        tile:          lockSet.has(i) ? tile : null,
-        isLocked:      lockSet.has(i),
-        // For locked wild tiles: store the resolved value for display
-        resolvedValue: lockSet.has(i) && WILDS_SET.has(tile) ? resolvedTiles[i] : null,
-        slotType:      cells[i].type,
-      }));
-
-      const rackTiles = shuffle(solutionTiles.filter((_, i) => !lockSet.has(i)));
-
-      return {
-        mode: 'cross',
-        board,
-        boardSlots,
-        placementRow: placement.rowIdx,
-        placementCol: placement.colStart,
-        placementDir: placement.dir,
-        rackTiles,
-        solutionTiles,
-        equation: chosen.eq,
-        totalTile,
-        difficulty,
-        generatorVersion: GENERATOR_VERSION,
-        tileCounts,
-      };
-    }
-
-    const board = buildBoard(chosen.eq, chosen.tiles, cfg, { mode, totalTile, eqCount });
-    if (!board) continue;
-
-    return {
-      ...board,
-      difficulty,
-      generatorVersion: GENERATOR_VERSION,
-      seedEquation,
-      tileCounts,
-    };
+    const result = tryBuildResultFromBuilt(built, eqCount, cfg);
+    if (result) return result;
   }
 
-  throw new Error(
-    `Could not generate a valid bingo puzzle after ${MAX_RETRIES} attempts. ` +
-    'Please check that your config constraints are satisfiable.'
-  );
+  // Custom constraints: deep strict pass
+  if (hasCustomConstraints) {
+    const eqRangeStrict = toRange(cfg.equalCount);
+    const eqCandidates  = eqRangeStrict
+      ? Array.from({ length: eqRangeStrict[1] - eqRangeStrict[0] + 1 }, (_, i) => eqRangeStrict[0] + i)
+      : [1];
+
+    const opRangeStrict  = toRange(cfg.operatorCount);
+    const strictOpLoRaw  = opRangeStrict ? opRangeStrict[0] : 0;
+    const strictOpHiRaw  = opRangeStrict ? opRangeStrict[1] : 3;
+
+    for (const eqCount of eqCandidates) {
+      const strictOpHiClamp = Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
+      const strictOpLo      = Math.max(0, Math.min(strictOpLoRaw, strictOpHiClamp));
+      const strictOpHi      = Math.min(strictOpHiClamp, Math.max(strictOpHiRaw, strictOpLo));
+      for (let nOps = strictOpLo; nOps <= strictOpHi; nOps++) {
+        const strictCfg  = { ...cfg, operatorCount: [nOps, nOps] };
+        const deepTries  = eqCount >= 3 ? 200 : 120;
+        for (let deepTry = 0; deepTry < deepTries; deepTry++) {
+          const built  = equationFirstBuilder(totalTile, strictCfg, eqCount, poolDefResolved);
+          const result = tryBuildResultFromBuilt(built, eqCount, cfg);
+          if (result) return result;
+        }
+      }
+    }
+    throw new Error(`Unable to generate puzzle that satisfies the selected advanced constraints. Reason: ${explainConstraintFailure(cfg)}`);
+  }
+
+  // Constraint-relaxation fallback tiers
+  const relaxedCfgs = [
+    { ...cfgCommitted, wildcardCount: 0, blankCount: 0 },
+    { ...cfgCommitted, wildcardCount: 0, blankCount: 0, heavyCount: null },
+    { ...cfgCommitted, wildcardCount: 0, blankCount: 0, heavyCount: null, operatorSpec: null },
+    { mode, totalTile, operatorCount: [1, 1], wildcardCount: 0, blankCount: 0, poolDef: cfgCommitted.poolDef ?? POOL_DEF },
+    ...(eqCountForClamp >= 3 ? [
+      { mode, totalTile, operatorCount: [0, 1], equalCount: [eqCountForClamp, eqCountForClamp], wildcardCount: 0, blankCount: 0, poolDef: cfgCommitted.poolDef ?? POOL_DEF },
+    ] : []),
+  ];
+
+  for (const relaxed of relaxedCfgs) {
+    if (timedOut()) break;
+    const eqCount = resolveEqualCount(mode, relaxed);
+    for (let retry = 0; retry < 12; retry++) {
+      if (timedOut()) break;
+      const built = equationFirstBuilder(totalTile, relaxed, eqCount, relaxed.poolDef ?? POOL_DEF);
+      if (!built) continue;
+      const result = tryBuildResultFromBuilt(built, eqCount, cfg);
+      if (result) return result;
+    }
+  }
+
+  return forceGuaranteedPuzzle(sanitizeConfigForFallback(cfg));
 }
 
 export function generateBingoBatch(cfg, count = 10) {
   return Array.from({ length: count }, () => generateBingo(cfg));
 }
 
-// Named exports for backward compatibility / external use (if any)
+export { getDfsCacheStats };
+
+// Named exports for backward compatibility
 export {
-  // existing
   findEquationsFromTiles,
   makeCounts,
   isValidEquation,
-  // new v5 modules (requested)
   constructEquation,
   equationToTileCounts,
+  equationToSourceTiles,
   hybridTileBuilder,
   scoreEquationDifficulty,
   optimizeBoardLayout,
   buildBoard,
+  mutateTileCountsSmart,
+  quickChecks,
+  constructEquationV6,
 };
