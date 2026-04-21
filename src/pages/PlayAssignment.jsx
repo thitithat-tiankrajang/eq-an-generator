@@ -90,7 +90,7 @@ function buildBingoConfig(opts = {}) {
   };
 }
 
-/** Score from tile points × slot multipliers (matches ui.jsx calcScore) */
+/** Score from tile points × slot multipliers + base bonus (matches Generator calcScore) */
 function calcScore(boardSlots) {
   let letterTotal = 0;
   let wordMult = 1;
@@ -104,7 +104,7 @@ function calcScore(boardSlots) {
     if (type === 'ex2') wordMult *= 2;
     if (type === 'ex3') wordMult *= 3;
   }
-  return letterTotal * wordMult;
+  return letterTotal * wordMult + 40;
 }
 
 /** Format ms → M:SS */

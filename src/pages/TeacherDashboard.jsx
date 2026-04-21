@@ -4,14 +4,12 @@ import { api } from "@/api/apiClient";
 import { Plus, BarChart2, Users, BookOpen, ChevronRight, AlertTriangle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import CreateAssignmentModal from "@/components/teacher/CreateAssignmentModal";
 
 export default function TeacherDashboard() {
   const navigate = useNavigate();
   const [assignments, setAssignments] = useState([]);
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showCreate, setShowCreate] = useState(false);
 
   useEffect(() => {
     const init = async () => {
@@ -25,11 +23,6 @@ export default function TeacherDashboard() {
     };
     init();
   }, []);
-
-  const handleAssignmentCreated = (a) => {
-    setAssignments(prev => [a, ...prev]);
-    setShowCreate(false);
-  };
 
   const now = new Date();
   const activeCount  = assignments.filter(a => new Date(a.dueDate) > now).length;
@@ -48,7 +41,7 @@ export default function TeacherDashboard() {
             </p>
           </div>
           <Button
-            onClick={() => setShowCreate(true)}
+            onClick={() => navigate('/create-assignment')}
             size="sm"
             className="bg-amber-700 hover:bg-amber-600 active:bg-amber-800 shadow-sm shrink-0"
           >
@@ -140,13 +133,6 @@ export default function TeacherDashboard() {
 
       </div>
 
-      {showCreate && (
-        <CreateAssignmentModal
-          students={students}
-          onCreated={handleAssignmentCreated}
-          onClose={() => setShowCreate(false)}
-        />
-      )}
     </div>
   );
 }

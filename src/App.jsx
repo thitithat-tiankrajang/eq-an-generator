@@ -12,6 +12,7 @@ import Register from './pages/Register';
 import PlayAssignment from './pages/PlayAssignment';
 import AssignmentDetail from './pages/AssignmentDetail';
 import AdminAssignmentDetail from './pages/AdminAssignmentDetail';
+import CreateAssignment from './pages/CreateAssignment';
 
 const { Pages, Layout, mainPage } = pagesConfig;
 const mainPageKey = mainPage ?? Object.keys(Pages)[0];
@@ -68,6 +69,11 @@ const AuthenticatedApp = () => {
       <Route path="/admin-assignment/:assignmentId" element={
         <LayoutWrapper currentPageName="AdminAssignmentDetail">
           <AdminAssignmentDetail />
+        </LayoutWrapper>
+      } />
+      <Route path="/create-assignment" element={
+        <LayoutWrapper currentPageName="CreateAssignment">
+          <CreateAssignment />
         </LayoutWrapper>
       } />
       {Object.entries(Pages).map(([path, Page]) => (
