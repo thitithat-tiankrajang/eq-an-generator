@@ -29,12 +29,16 @@ self.onmessage = async (e) => {
   const total = cfgList.length;
 
   for (let i = 0; i < total; i++) {
-    try {
-      const result = generateBingo(cfgList[i]);
-      self.postMessage({ type: 'result', result, done: i + 1, total });
-    } catch (err) {
-      self.postMessage({ type: 'error', message: err.message });
-      return;
+    // Retry indefinitely until the puzzle succeeds.
+    // The main thread cancels by calling worker.terminate(), which aborts this loop.
+    while (true) {
+      try {
+        const result = generateBingo(cfgList[i]);
+        self.postMessage({ type: 'result', result, done: i + 1, total });
+        break;
+      } catch {
+        // hard configuration — retry silently
+      }
     }
   }
 
