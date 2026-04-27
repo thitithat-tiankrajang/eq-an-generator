@@ -1,26 +1,17 @@
 import { useState } from 'react';
 
-// ── Inline solver for board-constrained solutions ─────────────────────────────
-// (mirrors analysisEngine logic but supports fixed locked positions)
-
-// Tile point values — matches TILE_POINTS in bingoGenerator + normalized * /
+// ── Inline solver ─────────────────────────────────────────────────────────────
 const _TILE_POINTS = {
   '0':1,'1':1,'2':1,'3':1,'4':2,'5':2,'6':2,'7':2,'8':2,'9':2,
   '10':3,'11':4,'12':3,'13':6,'14':4,'15':4,'16':4,'17':6,'18':4,'19':7,'20':5,
   '+':2,'-':2,'×':2,'÷':2,'*':2,'/':2,'+/-':1,'×/÷':1,'=':1,'?':0,
 };
 
-/**
- * calcScore — matches ui.jsx calcScore exactly:
- *   - locked positions always treated as px1 (no bonus)
- *   - uses original wildcard token's own points (not resolved value)
- *   - no bingo bonus
- */
 function calcScore(origTokens, boardSlots) {
   let letterTotal = 0, wordMult = 1;
   for (let i = 0; i < boardSlots.length; i++) {
-    const tok = origTokens[i];
-    const pts = _TILE_POINTS[tok] ?? 0;
+    const tok  = origTokens[i];
+    const pts  = _TILE_POINTS[tok] ?? 0;
     const type = boardSlots[i].isLocked ? 'px1' : (boardSlots[i].slotType ?? 'px1');
     if (type === 'px2') letterTotal += pts * 2;
     else if (type === 'px3' || type === 'px3star') letterTotal += pts * 3;
@@ -31,17 +22,12 @@ function calcScore(origTokens, boardSlots) {
   return letterTotal * wordMult + 40;
 }
 
-const _MARKS  = new Set(['=', '+', '-', '*', '/']);
-const _UNIT   = new Set(['0','1','2','3','4','5','6','7','8','9']);
-const _TENS   = new Set(['10','11','12','13','14','15','16','17','18','19','20']);
-const _SMAP   = {
-  '+/-':  ['+', '-'],
-  '×/÷':  ['*', '/'],
-  '×':    ['*'],
-  '÷':    ['/'],
-  '?':    ['0','1','2','3','4','5','6','7','8','9',
-            '10','11','12','13','14','15','16','17','18','19','20',
-            '+','-','*','/','='],
+const _MARKS = new Set(['=', '+', '-', '*', '/']);
+const _UNIT  = new Set(['0','1','2','3','4','5','6','7','8','9']);
+const _TENS  = new Set(['10','11','12','13','14','15','16','17','18','19','20']);
+const _SMAP  = {
+  '+/-': ['+', '-'], '×/÷': ['*', '/'], '×': ['*'], '÷': ['/'],
+  '?': ['0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20','+','-','*','/','='],
 };
 
 function _norm(t) { return t === '×' ? '*' : t === '÷' ? '/' : t; }
@@ -93,7 +79,9 @@ function _condition(seq) {
     if ((a==='/'||a==='-') && b==='0') return false;
   }
   let cnt = 0;
-  for (const x of seq) { if (_UNIT.has(x)) { if (++cnt > 3) return false; } else cnt = 0; }
+  for (const x of seq) {
+    if (_UNIT.has(x)) { if (++cnt > 3) return false; } else cnt = 0;
+  }
   let tmp = '';
   for (const x of seq) {
     if (!_MARKS.has(x)) tmp += x;
@@ -121,7 +109,6 @@ function _checkEq(seq) {
   } catch { return false; }
 }
 
-// Permute indices of an array (dedup by normalized value at each index)
 function* _permIdx(normArr) {
   const indices = normArr.map((_, i) => i);
   function* rec(rem, pre) {
@@ -137,40 +124,24 @@ function* _permIdx(normArr) {
   yield* rec(indices, []);
 }
 
-/**
- * findBoardSolutions(boardSlots, rackTiles, maxResults?)
- *
- * boardSlots: Array<{ isLocked, tile, slotType }>
- *   locked slots have tile set; unlocked slots have tile=null
- * rackTiles: string[] — shuffled tiles for unlocked positions
- *
- * Returns solutions that use ALL rack tiles, sorted by score desc.
- */
 function findBoardSolutions(boardSlots, rackTiles, maxResults = 300) {
   _ec = new Map();
-  const n = boardSlots.length;
+  const n        = boardSlots.length;
   const unlocked = boardSlots.reduce((acc, s, i) => { if (!s.isLocked) acc.push(i); return acc; }, []);
   const slotTypes = boardSlots.map(s => s.slotType);
-  const normRack = rackTiles.map(_norm);
-
-  const results = [];
-  const seen = new Set();
+  const normRack  = rackTiles.map(_norm);
+  const results   = [];
+  const seen      = new Set();
 
   for (const idxPerm of _permIdx(normRack)) {
     if (results.length >= maxResults) break;
-
-    // Build normalized full sequence
     const fullNorm = Array(n);
     boardSlots.forEach((s, i) => { if (s.isLocked) fullNorm[i] = _norm(s.tile); });
     unlocked.forEach((si, pi) => { fullNorm[si] = normRack[idxPerm[pi]]; });
-
     if (!_template(fullNorm)) continue;
-
-    // Original sequence (for scoring with wildcard points)
     const fullOrig = Array(n);
     boardSlots.forEach((s, i) => { if (s.isLocked) fullOrig[i] = s.tile; });
     unlocked.forEach((si, pi) => { fullOrig[si] = rackTiles[idxPerm[pi]]; });
-
     for (const exp of _expand(fullNorm)) {
       if (results.length >= maxResults) break;
       if (_condition(exp) && _checkEq(exp)) {
@@ -183,44 +154,39 @@ function findBoardSolutions(boardSlots, rackTiles, maxResults = 300) {
       }
     }
   }
-
   return results.sort((a, b) => b.score - a.score);
 }
 
-// ── Slot bonus badge ──────────────────────────────────────────────────────────
-
+// ── Slot type badge ───────────────────────────────────────────────────────────
 const SLOT_COLORS = {
-  px1: 'bg-stone-100 text-stone-500',
-  px2: 'bg-sky-100 text-sky-700',
-  px3: 'bg-indigo-100 text-indigo-700',
-  px3star: 'bg-yellow-100 text-yellow-700',
-  ex2: 'bg-orange-100 text-orange-700',
-  ex3: 'bg-red-100 text-red-700',
+  px1:     'bg-stone-100 text-stone-500',
+  px2:     'bg-sky-100 text-sky-700',
+  px3:     'bg-indigo-100 text-indigo-700',
+  px3star: 'bg-indigo-100 text-indigo-700',
+  ex2:     'bg-amber-100 text-amber-700',
+  ex3:     'bg-rose-100 text-rose-700',
 };
-
 const SLOT_LABEL = {
-  px1: '×1', px2: '×2', px3: '×3', px3star: '★×3',
-  ex2: 'EQ×2', ex3: 'EQ×3',
+  px1: '×1', px2: '×2P', px3: '×3P', px3star: '★×3', ex2: '×2E', ex3: '×3E',
 };
 
 function SlotBadge({ type }) {
   return (
-    <span className={`text-[7px] font-bold px-1 py-0.5 rounded ${SLOT_COLORS[type] ?? 'bg-stone-100 text-stone-400'}`}>
+    <span className={`text-[7px] font-mono font-bold px-1 py-0.5 rounded ${SLOT_COLORS[type] ?? 'bg-stone-100 text-stone-400'}`}>
       {SLOT_LABEL[type] ?? type}
     </span>
   );
 }
 
 // ── Token chip ────────────────────────────────────────────────────────────────
-
 function TokenChip({ token, slotType, isLocked }) {
   const display = token === '*' ? '×' : token === '/' ? '÷' : token;
   const base = isLocked
-    ? 'bg-amber-100 border-amber-400 text-amber-800'
-    : 'bg-white border-stone-300 text-stone-800';
+    ? 'bg-amber-50 border-amber-300 text-amber-800'
+    : 'bg-white border-stone-200 text-stone-800';
   return (
     <div className="flex flex-col items-center gap-0.5">
-      <div className={`w-8 h-8 rounded-md border-2 flex items-center justify-center font-mono font-bold text-[11px] ${base}`}>
+      <div className={`w-8 h-8 rounded-lg border flex items-center justify-center font-mono font-bold text-[11px] ${base}`}>
         {display}
       </div>
       <SlotBadge type={slotType} />
@@ -229,15 +195,13 @@ function TokenChip({ token, slotType, isLocked }) {
 }
 
 // ── BingoSolution ─────────────────────────────────────────────────────────────
-
 export function BingoSolution({ result }) {
-  // solutions: null = not computed yet, array = computed (may be empty)
-  const [solutions, setSolutions] = useState(null);
-  const [computing, setComputing] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [prevResult, setPrevResult] = useState(result);
+  const [solutions,   setSolutions]   = useState(null);
+  const [computing,   setComputing]   = useState(false);
+  const [open,        setOpen]        = useState(false);
+  const [prevResult,  setPrevResult]  = useState(result);
 
-  // Reset when puzzle changes (derived state pattern — no useEffect)
+  // Reset when puzzle changes
   if (result !== prevResult) {
     setPrevResult(result);
     setSolutions(null);
@@ -246,22 +210,17 @@ export function BingoSolution({ result }) {
 
   const handleClick = () => {
     if (computing) return;
-
-    // Already computed → just toggle visibility
-    if (solutions !== null) {
-      setOpen(v => !v);
-      return;
-    }
-
-    // First time → compute then open
+    if (solutions !== null) { setOpen(v => !v); return; }
     setComputing(true);
     setTimeout(() => {
       try {
         const sols = findBoardSolutions(result.boardSlots, result.rackTiles);
         setSolutions(sols);
+        setOpen(true);
       } catch (e) {
         console.error('[BingoSolution] solver error', e);
         setSolutions([]);
+        setOpen(true);
       }
       setComputing(false);
     }, 0);
@@ -270,62 +229,141 @@ export function BingoSolution({ result }) {
   if (!result) return null;
 
   const computed = solutions !== null;
-  const count = solutions?.length ?? 0;
+  const count    = solutions?.length ?? 0;
 
   return (
     <>
+      <style>{`
+        @keyframes solEnter {
+          from { opacity: 0; transform: translateY(10px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes solRowIn {
+          from { opacity: 0; transform: translateX(-8px); }
+          to   { opacity: 1; transform: translateX(0); }
+        }
+        .sol-enter   { animation: solEnter  0.25s cubic-bezier(0.22,1,0.36,1) both; }
+        .sol-row-in  { animation: solRowIn  0.2s  cubic-bezier(0.22,1,0.36,1) both; }
+
+        .sol-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 20px;
+          border-radius: 8px;
+          border: 1px solid;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          cursor: pointer;
+          transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+          user-select: none;
+        }
+        .sol-btn:active { transform: scale(0.97); }
+        .sol-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .sol-btn-idle {
+          background: #fafaf9;
+          border-color: #d6d3d1;
+          color: #78716c;
+        }
+        .sol-btn-idle:hover { background: #f5f5f4; border-color: #a8a29e; color: #292524; }
+
+        .sol-btn-open {
+          background: #f0fdf4;
+          border-color: #86efac;
+          color: #166534;
+        }
+        .sol-btn-open:hover { background: #dcfce7; }
+
+        .sol-btn-loading {
+          background: #fafaf9;
+          border-color: #e7e5e4;
+          color: #a8a29e;
+          cursor: wait;
+        }
+      `}</style>
+
       <div className="text-center mb-3">
         <button
           onClick={handleClick}
           disabled={computing}
-          className={`px-6 py-2 rounded-lg border font-mono text-[10px] tracking-[0.25em] transition-all
-            ${computing
-              ? 'border-stone-200 bg-stone-50 text-stone-400 cursor-wait'
-              : computed
-                ? 'border-emerald-300 bg-emerald-50 text-emerald-600 cursor-pointer hover:bg-emerald-100'
-                : 'border-stone-200 bg-stone-50 text-stone-400 hover:border-stone-300 cursor-pointer'}`}
+          className={`sol-btn ${computing ? 'sol-btn-loading' : computed && open ? 'sol-btn-open' : 'sol-btn-idle'}`}
         >
-          {computing
-            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>COMPUTING…</span>
-            : computed
-              ? `${count} SOLUTION${count !== 1 ? 'S' : ''} ${open ? '▲' : '▼'}`
-              : '▶ CALCULATE SOLUTIONS'
-          }
+          {computing ? (
+            <>
+              <svg className="animate-spin" width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <circle cx="6" cy="6" r="5" stroke="currentColor" strokeWidth="1.5" strokeDasharray="10 20" strokeLinecap="round"/>
+              </svg>
+              Computing
+            </>
+          ) : computed ? (
+            <>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d={open ? 'M2 8l4-4 4 4' : 'M2 4l4 4 4-4'} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {count} solution{count !== 1 ? 's' : ''} {open ? 'hide' : 'show'}
+            </>
+          ) : (
+            <>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              Calculate solutions
+            </>
+          )}
         </button>
       </div>
 
       {open && computed && (
-        <div className="bg-white rounded-2xl border border-emerald-200 shadow-sm p-5 mb-4 animate-[fadeUp_0.25s_ease]">
-          <div className="text-[9px] tracking-[0.3em] uppercase font-mono font-semibold text-emerald-600 mb-4">
-            ALL SOLUTIONS (8-TILE BINGO)
+        <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-4 mb-4 sol-enter">
+
+          {/* Header */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="font-mono text-[9px] font-semibold text-stone-400 uppercase tracking-widest">
+              All solutions
+            </div>
+            {count > 0 && (
+              <span className="font-mono text-[9px] text-stone-400">
+                {count}{count >= 300 ? '+' : ''} found
+              </span>
+            )}
           </div>
 
           {count === 0 && (
-            <p className="text-center text-sm text-stone-400 py-4">No solutions found</p>
+            <p className="text-center text-sm text-stone-400 py-6 font-mono">No solutions found</p>
           )}
 
           {count > 0 && (
-            <div className="space-y-3">
+            <div className="space-y-2">
               {solutions.map((sol, idx) => (
                 <div
                   key={idx}
-                  className={`rounded-xl border p-3 ${idx === 0 ? 'border-amber-300 bg-amber-50' : 'border-stone-100 bg-stone-50'}`}
+                  className={`rounded-xl border p-3 sol-row-in transition-colors
+                    ${idx === 0
+                      ? 'border-amber-200 bg-amber-50'
+                      : 'border-stone-100 bg-stone-50 hover:bg-stone-100'}`}
+                  style={{ animationDelay: `${Math.min(idx * 35, 300)}ms` }}
                 >
+                  {/* Row header */}
                   <div className="flex items-center justify-between mb-2">
-                    <span className="font-mono text-[9px] text-stone-400">#{idx + 1}</span>
                     <div className="flex items-center gap-2">
+                      <span className="font-mono text-[9px] text-stone-400">#{idx + 1}</span>
                       {idx === 0 && (
-                        <span className="text-[8px] font-bold bg-amber-400 text-white px-1.5 py-0.5 rounded tracking-wide">
-                          BEST
+                        <span className="font-mono text-[8px] font-bold bg-amber-400 text-white px-1.5 py-0.5 rounded tracking-wider">
+                          Best
                         </span>
                       )}
-                      <span className={`font-mono font-bold text-sm ${idx === 0 ? 'text-amber-700' : 'text-stone-700'}`}>
-                        {sol.score} pts
-                      </span>
                     </div>
+                    <span className={`font-mono font-bold text-sm ${idx === 0 ? 'text-amber-700' : 'text-stone-600'}`}>
+                      {sol.score} pts
+                    </span>
                   </div>
 
-                  <div className="flex gap-1.5 overflow-x-auto pb-1 mb-2">
+                  {/* Token chips */}
+                  <div className="flex gap-1 overflow-x-auto pb-1 mb-2">
                     {sol.tokens.map((tok, ti) => (
                       <TokenChip
                         key={ti}
@@ -336,18 +374,13 @@ export function BingoSolution({ result }) {
                     ))}
                   </div>
 
-                  <div className={`px-3 py-2 rounded-lg font-mono text-sm tracking-widest ${
-                    idx === 0 ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-700'
-                  }`}>
+                  {/* Equation string */}
+                  <div className={`px-3 py-2 rounded-lg font-mono text-sm tracking-widest
+                    ${idx === 0 ? 'bg-amber-100 text-amber-800' : 'bg-stone-100 text-stone-600'}`}>
                     {sol.eq.replace(/\*/g, '×').replace(/\//g, '÷')}
                   </div>
                 </div>
               ))}
-
-              <p className="text-[10px] text-stone-400 text-center font-mono pt-1">
-                {count} solution{count !== 1 ? 's' : ''} found
-                {count >= 300 ? ' (showing first 300)' : ''}
-              </p>
             </div>
           )}
         </div>

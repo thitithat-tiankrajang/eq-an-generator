@@ -34,15 +34,21 @@ function pickNumForBudget(budget) {
 
 function distributeTileBudget(total, nSlots) {
   if (nSlots <= 0 || total < nSlots || total > 3 * nSlots) return null;
-  const b = Array(nSlots).fill(1);
-  let rem = total - nSlots;
+  // Sequential random assignment: shuffle slot order, then for each slot pick a
+  // value in the valid range so the remaining slots can still be filled.
+  // This generates all valid distributions (avoids the [2,2,...,2] lock that
+  // occurs when total == 2*nSlots under the old cyclic-increment approach).
   const order = shuffle(Array.from({ length: nSlots }, (_, i) => i));
-  let oi = 0;
-  while (rem > 0) {
-    const i = order[oi % order.length];
-    if (b[i] < 3) { b[i]++; rem--; }
-    oi++;
-    if (oi > nSlots * 3) break;
+  const b = Array(nSlots).fill(0);
+  let rem = total;
+  for (let i = 0; i < nSlots; i++) {
+    const slot = order[i];
+    const slotsLeft = nSlots - 1 - i;
+    const lo = Math.max(1, rem - 3 * slotsLeft);
+    const hi = Math.min(3, rem - slotsLeft);
+    if (lo > hi) return null;
+    b[slot] = randInt(lo, hi);
+    rem -= b[slot];
   }
   return rem === 0 ? b : null;
 }
@@ -77,11 +83,7 @@ function pickOperatorsForSpec(N, spec) {
       return ops.filter(o => o === op).length < effectiveMax;
     });
     if (!avail.length) return null;
-    ops.push(weightedSample(avail, avail.map(o => {
-      if (o === '+' || o === '×') return 5;
-      if (o === '-') return 3;
-      return 2;
-    })));
+    ops.push(avail[0 | (Math.random() * avail.length)]);
   }
 
   return ops.slice(0, N);

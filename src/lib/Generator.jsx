@@ -40,8 +40,6 @@ function calcScore(boardSlots) {
   let wordMult    = 1;
   for (const slot of boardSlots) {
     if (!slot.tile) continue;
-    // Wildcards: use the wildcard tile's own points, not the resolved value's points.
-    // Locked positions: always px1 (bonus squares under a locked tile have no effect).
     const pts  = TILE_POINTS[slot.tile] ?? 0;
     const type = slot.isLocked ? 'px1' : (slot.slotType ?? 'px1');
     if (type === 'px2') letterTotal += pts * 2;
@@ -96,15 +94,19 @@ export default function App() {
   }, []);
 
   // ── Puzzle list state ─────────────────────────────────────────────────────
-  const [puzzleList,   setPuzzleList]   = useState([]);  // array of generateBingo results
-  const [puzzleStates, setPuzzleStates] = useState([]);  // per-puzzle game states (mutable)
+  const [puzzleList,   setPuzzleList]   = useState([]);
+  const [puzzleStates, setPuzzleStates] = useState([]);
   const [currentIdx,   setCurrentIdx]   = useState(0);
+
+  // ── Puzzle transition animation ───────────────────────────────────────────
+  const [puzzleVisible, setPuzzleVisible] = useState(true);
+  const [slideDir, setSlideDir] = useState('up'); // 'up' | 'left' | 'right'
 
   // ── Loading / error ───────────────────────────────────────────────────────
   const [error,       setError]       = useState('');
   const [loading,     setLoading]     = useState(false);
   const [genCount,    setGenCount]    = useState(0);
-  const [genProgress, setGenProgress] = useState(null); // { done, total } | null
+  const [genProgress, setGenProgress] = useState(null);
   const cancelRef = useRef(null);
 
   // ── Timer ─────────────────────────────────────────────────────────────────
@@ -114,7 +116,7 @@ export default function App() {
   const timerStartRef    = useRef(null);
 
   // ── Wild picker ───────────────────────────────────────────────────────────
-  const [wildPicker, setWildPicker] = useState(null); // { slotIndex } | null
+  const [wildPicker, setWildPicker] = useState(null);
 
   // ── Selection ─────────────────────────────────────────────────────────────
   const [selected, setSelected] = useState(null);
@@ -125,7 +127,6 @@ export default function App() {
 
   // ── Reveal solution ───────────────────────────────────────────────────────
   const [revealed, setRevealed] = useState(false);
-
 
   // ─────────────────────────────────────────────────────────────────────────
   // DERIVED CURRENT STATE
@@ -193,17 +194,36 @@ export default function App() {
     }, 50);
   }, [updateCurrentState]);
 
-  // Clean up timer on unmount or puzzle change
   useEffect(() => () => stopTimer(), [stopTimer]);
 
-  // Restore timer when start puzzle
   useEffect(() => {
     if (!currentState) return;
-  
     if (!timerActive && currentState.timeMs != null) {
       setTimerMs(currentState.timeMs);
     }
   }, [currentIdx, currentState, timerActive]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // ANIMATED NAVIGATE
+  // ─────────────────────────────────────────────────────────────────────────
+  const navigateTo = useCallback((idx, dir = 'up') => {
+    if (idx < 0 || idx >= puzzleList.length) return;
+
+    stopTimer();
+    setSlideDir(dir);
+    setPuzzleVisible(false);
+
+    setTimeout(() => {
+      const nextState = puzzleStates[idx];
+      setTimerMs(nextState?.timeMs ?? 0);
+      setSelected(null);
+      setWildPicker(null);
+      setRevealed(false);
+      setAnalysisOpen(false);
+      setCurrentIdx(idx);
+      setPuzzleVisible(true);
+    }, 180);
+  }, [puzzleList.length, puzzleStates, stopTimer]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // GENERATE
@@ -254,26 +274,6 @@ export default function App() {
   }, [mode, puzzleSets, stopTimer, crossBonus]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // NAVIGATE
-  // ─────────────────────────────────────────────────────────────────────────
-  const navigateTo = useCallback((idx) => {
-    if (idx < 0 || idx >= puzzleList.length) return;
-  
-    stopTimer();
-  
-    const nextState = puzzleStates[idx];
-  
-    setTimerMs(nextState?.timeMs ?? 0); // ✅ restore เวลา
-  
-    setSelected(null);
-    setWildPicker(null);
-    setRevealed(false);
-    setAnalysisOpen(false);
-  
-    setCurrentIdx(idx);
-  }, [puzzleList.length, puzzleStates, stopTimer]);
-
-  // ─────────────────────────────────────────────────────────────────────────
   // WILD PICKER
   // ─────────────────────────────────────────────────────────────────────────
   const handleWildResolve = useCallback((value) => {
@@ -288,17 +288,12 @@ export default function App() {
   }, [wildPicker, updateCurrentState]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // BOARD TILE CLICK (filled, user-placed tiles only — locked tiles inert)
-  //   • nothing selected      → select this tile
-  //   • same tile re-clicked  → deselect (wild tile → open picker)
-  //   • rack selected         → swap rack ↔ board
-  //   • other board selected  → swap board ↔ board
+  // BOARD TILE CLICK
   // ─────────────────────────────────────────────────────────────────────────
   const handleBoardSlotClick = useCallback((slotIndex) => {
     const slot = boardSlots[slotIndex];
     if (!slot || !slot.tile || slot.isLocked) return;
 
-    // ── Re-click already-selected tile ─────────────────────────────────────
     if (selected?.source === 'board' && selected.index === slotIndex) {
       if (WILD_TILES.has(slot.tile)) {
         setWildPicker({ slotIndex });
@@ -309,7 +304,6 @@ export default function App() {
       return;
     }
 
-    // ── Rack tile selected → swap rack ↔ board ──────────────────────────────
     if (selected?.source === 'rack') {
       const rackItem = rackTiles[selected.index];
       if (!rackItem) { setSelected(null); return; }
@@ -328,7 +322,6 @@ export default function App() {
       return;
     }
 
-    // ── Board tile selected → swap board ↔ board ────────────────────────────
     if (selected?.source === 'board') {
       const fromSlot = boardSlots[selected.index];
       updateCurrentState(s => {
@@ -341,14 +334,11 @@ export default function App() {
       return;
     }
 
-    // ── Nothing selected → select ────────────────────────────────────────────
     setSelected({ source: 'board', index: slotIndex });
   }, [boardSlots, rackTiles, selected, updateCurrentState]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // BOARD EMPTY SLOT CLICK
-  //   • rack selected   → place rack tile here; rack slot becomes null
-  //   • board selected  → move board tile here; original slot becomes null
   // ─────────────────────────────────────────────────────────────────────────
   const handleBoardEmptySlotClick = useCallback((slotIndex) => {
     if (!selected) return;
@@ -384,11 +374,7 @@ export default function App() {
   }, [boardSlots, rackTiles, selected, updateCurrentState]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // RACK TILE CLICK (filled slots only)
-  //   • board selected      → swap rack ↔ board
-  //   • same rack selected  → deselect
-  //   • other rack selected → swap rack ↔ rack
-  //   • nothing selected    → select this rack tile
+  // RACK TILE CLICK
   // ─────────────────────────────────────────────────────────────────────────
   const handleRackTileClick = useCallback((rackIndex) => {
     if (wildPicker) { setWildPicker(null); return; }
@@ -396,7 +382,6 @@ export default function App() {
     const clickedItem = rackTiles[rackIndex];
     if (!clickedItem) return;
 
-    // Board tile selected → swap rack ↔ board ────────────────────────────
     if (selected?.source === 'board') {
       const boardSlot = boardSlots[selected.index];
       if (!boardSlot || boardSlot.isLocked) { setSelected(null); return; }
@@ -413,13 +398,11 @@ export default function App() {
       return;
     }
 
-    // Same rack tile → deselect ───────────────────────────────────────────
     if (selected?.source === 'rack' && selected.index === rackIndex) {
       setSelected(null);
       return;
     }
 
-    // Other rack tile selected → swap rack ↔ rack ─────────────────────────
     if (selected?.source === 'rack') {
       updateCurrentState(s => {
         const newRack = s.rackTiles.map(t => t ? { ...t } : null);
@@ -430,14 +413,11 @@ export default function App() {
       return;
     }
 
-    // Nothing selected → select ───────────────────────────────────────────
     setSelected({ source: 'rack', index: rackIndex });
   }, [boardSlots, rackTiles, selected, wildPicker, updateCurrentState]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // RACK EMPTY SLOT CLICK
-  //   • rack selected  → move rack tile to this empty slot
-  //   • board selected → move board tile back to rack
   // ─────────────────────────────────────────────────────────────────────────
   const handleRackEmptySlotClick = useCallback((rackIndex) => {
     if (!selected) return;
@@ -469,7 +449,7 @@ export default function App() {
   }, [boardSlots, selected, updateCurrentState]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // RECALL ALL — move all non-locked board tiles back to rack
+  // RECALL ALL
   // ─────────────────────────────────────────────────────────────────────────
   const handleRecallAll = useCallback(() => {
     updateCurrentState(s => {
@@ -501,7 +481,7 @@ export default function App() {
       return;
     }
     if (hasUnresolved) {
-      updateCurrentState(s => ({ ...s, submitResult: { correct: false, message: 'Tap your wildcard tile again to assign its value (? / +/- / ×/÷)' } }));
+      updateCurrentState(s => ({ ...s, submitResult: { correct: false, message: 'Tap your wildcard tile again to assign its value' } }));
       return;
     }
 
@@ -515,18 +495,17 @@ export default function App() {
       stopTimer();
       updateCurrentState(s => ({
         ...s,
-        submitResult: { correct: true, message: `✓ ${eq}`, score },
+        submitResult: { correct: true, message: eq, score },
         timeMs: elapsed,
         timerStarted: true,
       }));
-      // Auto-navigate to next puzzle after short delay
       if (currentIdx < puzzleList.length - 1) {
-        setTimeout(() => navigateTo(currentIdx + 1), 1400);
+        setTimeout(() => navigateTo(currentIdx + 1, 'left'), 1400);
       }
     } else {
       updateCurrentState(s => ({
         ...s,
-        submitResult: { correct: valid, message: valid ? `✓ ${eq}` : `✗ ${eq}`, score },
+        submitResult: { correct: valid, message: eq, score },
         timeMs: elapsed,
       }));
       if (!valid && timerActive) stopTimer();
@@ -534,21 +513,17 @@ export default function App() {
   }, [boardSlots, timerActive, timerMs, currentState, updateCurrentState, currentIdx, puzzleList.length, navigateTo, stopTimer, currentResult?.eqCount]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // ANALYSIS (admin only)
+  // ANALYSIS
   // ─────────────────────────────────────────────────────────────────────────
   const handleAnalysis = useCallback(async () => {
     if (!currentResult) return;
     setAnalysisLoading(true);
     setAnalysisOpen(true);
 
-    // Run solver in a microtask to not block UI
     await new Promise(r => setTimeout(r, 30));
     const allSolutions = findAllSolutions(currentResult.solutionTiles, 300);
-    // Locked positions always count as px1 (matches check-eq fixed-tile rule).
     const slotTypes = boardSlots.map(s => s.isLocked ? 'px1' : (s.slotType ?? 'px1'));
 
-    // Score each solution using its own pre-expansion token order (origTokens),
-    // so wildcard tiles contribute their OWN points, not the resolved tile's points.
     const scoredSols = allSolutions.map(sol => ({
       ...sol,
       score: scoreEquation(sol.origTokens ?? currentResult.solutionTiles, slotTypes),
@@ -579,13 +554,139 @@ export default function App() {
     setJumpValue(currentIdx + 1);
   }, [currentIdx]);
 
+  // Build animation class based on direction and visibility
+  const puzzleAnimClass = puzzleVisible
+    ? 'puzzle-enter'
+    : slideDir === 'left'
+      ? 'puzzle-exit-left'
+      : slideDir === 'right'
+        ? 'puzzle-exit-right'
+        : 'puzzle-exit-up';
+
   return (
     <div className="min-h-screen bg-stone-200 pb-20">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
-        @keyframes fadeUp  { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
-        @keyframes slideUp { from { opacity:0; transform:translateY(40px); } to { opacity:1; transform:translateY(0); } }
         .font-mono { font-family: "JetBrains Mono", "Fira Code", monospace; letter-spacing: 0; }
+
+        /* ── Puzzle transition animations ─────────────────────────────── */
+        @keyframes puzzleEnter {
+          from { opacity: 0; transform: translateY(16px) scale(0.985); }
+          to   { opacity: 1; transform: translateY(0)    scale(1);     }
+        }
+        @keyframes puzzleExitUp {
+          from { opacity: 1; transform: translateY(0)     scale(1);     }
+          to   { opacity: 0; transform: translateY(-12px) scale(0.985); }
+        }
+        @keyframes puzzleExitLeft {
+          from { opacity: 1; transform: translateX(0)    scale(1);     }
+          to   { opacity: 0; transform: translateX(-20px) scale(0.99); }
+        }
+        @keyframes puzzleExitRight {
+          from { opacity: 1; transform: translateX(0)    scale(1);    }
+          to   { opacity: 0; transform: translateX(20px) scale(0.99); }
+        }
+        .puzzle-enter      { animation: puzzleEnter      0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+        .puzzle-exit-up    { animation: puzzleExitUp     0.16s ease-in both; }
+        .puzzle-exit-left  { animation: puzzleExitLeft   0.16s ease-in both; }
+        .puzzle-exit-right { animation: puzzleExitRight  0.16s ease-in both; }
+
+        /* ── Button base ──────────────────────────────────────────────── */
+        .btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          font-family: "JetBrains Mono", monospace;
+          font-size: 10px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          border-radius: 8px;
+          border: 1px solid;
+          cursor: pointer;
+          transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease, transform 0.08s ease;
+          white-space: nowrap;
+          user-select: none;
+        }
+        .btn:active { transform: scale(0.97); }
+        .btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+        /* Nav variant — subtle, stone */
+        .btn-nav {
+          padding: 7px 14px;
+          background: #ffffff;
+          border-color: #d6d3d1;
+          color: #57534e;
+        }
+        .btn-nav:not(:disabled):hover {
+          background: #f5f5f4;
+          border-color: #a8a29e;
+          color: #292524;
+        }
+
+        /* Primary variant — dark fill */
+        .btn-primary {
+          padding: 9px 20px;
+          background: #292524;
+          border-color: #292524;
+          color: #fafaf9;
+        }
+        .btn-primary:not(:disabled):hover {
+          background: #1c1917;
+          border-color: #1c1917;
+          box-shadow: 0 1px 6px rgba(0,0,0,0.18);
+        }
+
+        /* Danger / error variant */
+        .btn-danger {
+          padding: 9px 20px;
+          background: #fef2f2;
+          border-color: #fca5a5;
+          color: #991b1b;
+        }
+        .btn-danger:not(:disabled):hover {
+          background: #fee2e2;
+          border-color: #f87171;
+        }
+
+        /* Ghost variant — no fill, just border */
+        .btn-ghost {
+          padding: 7px 16px;
+          background: transparent;
+          border-color: #d6d3d1;
+          color: #78716c;
+        }
+        .btn-ghost:not(:disabled):hover {
+          background: #f5f5f4;
+          border-color: #a8a29e;
+          color: #292524;
+        }
+
+        /* Accent variant — violet */
+        .btn-accent {
+          padding: 8px 18px;
+          background: #f5f3ff;
+          border-color: #c4b5fd;
+          color: #5b21b6;
+        }
+        .btn-accent:not(:disabled):hover {
+          background: #ede9fe;
+          border-color: #a78bfa;
+        }
+
+        /* Cancel / destructive ghost */
+        .btn-cancel {
+          padding: 11px 20px;
+          background: transparent;
+          border-color: #e7e5e4;
+          color: #a8a29e;
+        }
+        .btn-cancel:not(:disabled):hover {
+          background: #f5f5f4;
+          border-color: #d6d3d1;
+          color: #57534e;
+        }
       `}</style>
 
       <BingoHeader />
@@ -605,16 +706,17 @@ export default function App() {
         {totalCount > 0 && (
           <div className="flex items-center justify-between mb-4 px-1 gap-2">
 
-            {/* Prev */}
             <button
-              onClick={() => navigateTo(currentIdx - 1)}
+              onClick={() => navigateTo(currentIdx - 1, 'right')}
               disabled={currentIdx === 0}
-              className="px-3 py-1.5 rounded-lg border border-stone-300 bg-white font-mono text-[10px] text-stone-600 hover:border-stone-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              className="btn btn-nav"
             >
-              ← PREV
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style={{flexShrink:0}}>
+                <path d="M7 2L4 5.5L7 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Prev
             </button>
 
-            {/* Center: jump control */}
             <div className="flex items-center gap-2">
               <input
                 type="number"
@@ -626,18 +728,13 @@ export default function App() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     const v = Number(jumpValue);
-                    if (!isNaN(v)) {
-                      navigateTo(v - 1);
-                    }
+                    if (!isNaN(v)) navigateTo(v - 1);
                   }
                 }}
                 onBlur={() => {
                   const v = Number(jumpValue);
-                  if (!isNaN(v)) {
-                    navigateTo(v - 1);
-                  } else {
-                    setJumpValue(currentIdx + 1);
-                  }
+                  if (!isNaN(v)) navigateTo(v - 1);
+                  else setJumpValue(currentIdx + 1);
                 }}
                 className="w-14 px-2 py-1 text-center border border-stone-300 rounded-md text-[10px] font-mono"
                 min={1}
@@ -648,13 +745,15 @@ export default function App() {
               </span>
             </div>
 
-            {/* Next */}
             <button
-              onClick={() => navigateTo(currentIdx + 1)}
+              onClick={() => navigateTo(currentIdx + 1, 'left')}
               disabled={currentIdx === totalCount - 1}
-              className="px-3 py-1.5 rounded-lg border border-stone-300 bg-white font-mono text-[10px] text-stone-600 hover:border-stone-400 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed transition-colors"
+              className="btn btn-nav"
             >
-              NEXT →
+              Next
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none" style={{flexShrink:0}}>
+                <path d="M4 2L7 5.5L4 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
             </button>
 
           </div>
@@ -662,7 +761,7 @@ export default function App() {
 
         {/* ── Puzzle area ──────────────────────────────────────────────── */}
         {currentResult && (
-          <div style={{ animation: 'fadeUp 0.3s ease' }} key={currentIdx}>
+          <div className={puzzleAnimClass} key={currentIdx}>
 
             <BingoBoard
               boardSlots={boardSlots}
@@ -691,7 +790,7 @@ export default function App() {
 
             {/* Submit error message */}
             {submitResult && !submitResult.correct && (
-              <div className="mb-4 px-5 py-3 rounded-xl border border-red-300 bg-red-50 font-mono text-[12px] text-red-700 tracking-normal text-center font-bold">
+              <div className="mb-4 px-5 py-3 rounded-xl border border-red-200 bg-red-50 font-mono text-[11px] text-red-700 tracking-wide text-center font-bold" style={{animation:'puzzleEnter 0.2s ease both'}}>
                 {submitResult.message}
               </div>
             )}
@@ -702,14 +801,14 @@ export default function App() {
                 <button
                   onClick={handleAnalysis}
                   disabled={analysisLoading}
-                  className="px-5 py-2 rounded-lg border border-violet-300 bg-violet-50 text-violet-700 font-mono text-[10px] tracking-[0.2em] uppercase hover:bg-violet-100 transition-colors cursor-pointer disabled:opacity-50"
+                  className="btn btn-accent"
                 >
-                  {analysisLoading ? '◌ Analyzing…' : '⊕ ANALYSIS'}
+                  {analysisLoading ? 'Analyzing' : 'Analysis'}
                 </button>
               </div>
             )}
 
-            {/* Analysis panel (admin) */}
+            {/* Analysis panel */}
             {IS_ADMIN && analysisOpen && analysis && (
               <AnalysisPanel
                 analysis={analysis}
@@ -717,7 +816,7 @@ export default function App() {
               />
             )}
 
-            {/* Solution reveal — finds ALL valid permutations of rack tiles */}
+            {/* Solution reveal */}
             {!puzzleHidden && (
               <BingoSolution
                 result={currentResult}
@@ -728,10 +827,16 @@ export default function App() {
           </div>
         )}
 
-
         {totalCount === 0 && !loading && !error && (
           <div className="text-center py-20 text-stone-400 font-mono text-[11px] tracking-wide uppercase">
-            <div className="text-5xl mb-5 opacity-30 leading-none">⊞</div>
+            <div className="w-12 h-12 mx-auto mb-5 opacity-20 border-2 border-stone-400 rounded-lg flex items-center justify-center">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                <rect x="2" y="2" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="11" y="2" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="2" y="11" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+                <rect x="11" y="11" width="7" height="7" rx="1" stroke="currentColor" strokeWidth="1.5"/>
+              </svg>
+            </div>
             Configure a set and press Generate
           </div>
         )}
@@ -758,12 +863,12 @@ function WildPicker({ tile, currentValue, onSelect, onClose }) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 backdrop-blur-[1px]"
-      style={{ animation: 'fadeUp 0.15s ease' }}
+      style={{ animation: 'puzzleEnter 0.15s ease' }}
       onClick={onClose}
     >
       <div
         className="bg-white rounded-t-2xl border-t border-stone-200 shadow-2xl w-full max-w-lg pb-8"
-        style={{ animation: 'slideUp 0.2s ease' }}
+        style={{ animation: 'puzzleEnter 0.2s cubic-bezier(0.22,1,0.36,1)' }}
         onClick={e => e.stopPropagation()}
       >
         <div className="flex justify-center pt-3 pb-2">
@@ -774,7 +879,7 @@ function WildPicker({ tile, currentValue, onSelect, onClose }) {
             <div className="text-[9px] font-mono tracking-[0.3em] uppercase text-stone-400 mb-1">Set value for tile</div>
             <div className="inline-flex items-center gap-2">
               <BingoTile token={tile} role="wild-unresolved" size="md" points={TILE_POINTS[tile] ?? 0} />
-              <span className="font-mono text-stone-400 text-sm">→</span>
+              <span className="font-mono text-stone-400 text-sm">—</span>
               {currentValue
                 ? <BingoTile token={currentValue} role="selected" size="md" />
                 : <div className="w-[46px] h-[46px] rounded-lg border-2 border-dashed border-stone-200 flex items-center justify-center text-stone-300 font-mono text-xs">?</div>
@@ -788,7 +893,7 @@ function WildPicker({ tile, currentValue, onSelect, onClose }) {
               </button>
             ))}
           </div>
-          <button onClick={onClose} className="w-full py-3 rounded-xl border border-stone-200 font-mono text-[10px] tracking-[0.2em] uppercase text-stone-400 hover:border-stone-300 hover:bg-stone-50 transition-colors cursor-pointer">
+          <button onClick={onClose} className="btn btn-cancel w-full">
             Cancel
           </button>
         </div>
@@ -810,13 +915,14 @@ function AnalysisPanel({ analysis, onClose }) {
   };
 
   return (
-    <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5 mb-4" style={{ animation: 'fadeUp 0.2s ease' }}>
+    <div className="bg-white rounded-2xl border border-violet-200 shadow-sm p-5 mb-4" style={{ animation: 'puzzleEnter 0.2s ease' }}>
       <div className="flex items-center justify-between mb-4">
-        <div className="text-[9px] tracking-[0.3em] uppercase font-mono font-semibold text-violet-600">ANALYSIS</div>
-        <button onClick={onClose} className="text-stone-400 font-mono text-xs hover:text-stone-600 cursor-pointer">✕</button>
+        <div className="text-[9px] tracking-[0.3em] uppercase font-mono font-semibold text-violet-600">Analysis</div>
+        <button onClick={onClose} className="btn btn-ghost" style={{padding:'4px 10px', fontSize:'11px'}}>
+          Close
+        </button>
       </div>
 
-      {/* Performance score */}
       <div className="flex items-center gap-4 mb-4 px-4 py-3 rounded-xl bg-violet-50 border border-violet-100">
         <div className="text-center">
           <div className={`text-3xl font-extrabold ${colorMap[perf.label]}`}>{perf.performance}%</div>
@@ -829,13 +935,11 @@ function AnalysisPanel({ analysis, onClose }) {
         </div>
       </div>
 
-      {/* Stats */}
       <div className="grid grid-cols-3 gap-2 mb-4 text-center">
         <MiniStat label="Patterns" value={perf.patternCount} />
         <MiniStat label="Difficulty" value={<span className={diffClsMap[perf.difficultyClass]}>{perf.difficultyClass}</span>} />
         <MiniStat label="Max Score" value={perf.maxPossibleScore} />
       </div>
-
     </div>
   );
 }

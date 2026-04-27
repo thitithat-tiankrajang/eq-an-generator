@@ -224,7 +224,7 @@ const hybridTileBuilder = equationFirstBuilder;
 // Used inside the main retry loop to vary operator combinations each attempt.
 
 const _rndAdd = () => (Math.random() < 0.5 ? '+' : '-');
-const _rndMul = () => (Math.random() < 0.6 ? '×' : '÷'); // slightly favour × over ÷
+const _rndMul = () => (Math.random() < 0.5 ? '×' : '÷');
 
 function _buildOpSpec(ops) {
   const spec = { '+': [0,0], '-': [0,0], '×': [0,0], '÷': [0,0], '+/-': [0,0], '×/÷': [0,0] };
@@ -750,11 +750,13 @@ export function generateBingo(cfg) {
         tryCfg = { ...cfgCommitted, operatorSpec: _buildOpSpec(ops) };
       } else if (committedOpCount === 3) {
         const r = Math.random();
-        const ops = r < 0.20
-          ? [_rndAdd(), _rndAdd(), _rndAdd()]                                               // 20% all +/-
-          : r < 0.65
-          ? shuffle([_rndAdd(), _rndAdd(), _rndMul()])                                      // 45% two +/- one ×/÷
-          : shuffle([_rndAdd(), _rndMul(), _rndMul()]);                                     // 35% one +/- two ×/÷
+        const ops = r < 0.25
+          ? [_rndAdd(), _rndAdd(), _rndAdd()]                                               // 25% all +/-
+          : r < 0.50
+          ? shuffle([_rndAdd(), _rndAdd(), _rndMul()])                                      // 25% two +/- one ×/÷
+          : r < 0.75
+          ? shuffle([_rndAdd(), _rndMul(), _rndMul()])                                      // 25% one +/- two ×/÷
+          : [_rndMul(), _rndMul(), _rndMul()];                                              // 25% all ×/÷
         tryCfg = { ...cfgCommitted, operatorSpec: _buildOpSpec(ops) };
       }
     }

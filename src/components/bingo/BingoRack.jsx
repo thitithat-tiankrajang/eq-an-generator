@@ -29,9 +29,13 @@ export function BingoRack({ rackTiles, selected, onTileClick, onEmptySlotClick, 
             <button
               type="button"
               onClick={onRecallAll}
-              className="px-2 py-0.5 rounded-lg border-2 border-stone-300 text-stone-500 text-[11px] font-semibold hover:border-stone-400 hover:bg-stone-50 transition-colors cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg border border-stone-200 bg-white text-stone-500 font-mono text-[10px] font-semibold uppercase tracking-wide hover:border-stone-300 hover:bg-stone-50 hover:text-stone-700 active:scale-95 transition-all cursor-pointer"
             >
-              ↩ Recall
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <path d="M2 5.5C2 3.567 3.567 2 5.5 2c1.2 0 2.26.594 2.9 1.5M9 5.5C9 7.433 7.433 9 5.5 9c-1.2 0-2.26-.594-2.9-1.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                <path d="M7.5 1.5L8.4 3.5l-2 .5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Recall
             </button>
           )}
         </div>
