@@ -46,7 +46,8 @@ export function validateConfig(cfg) {
 
     const opRange = toRange(cfg.operatorCount);
     const minOps = opRange ? opRange[0] : 0;
-    const minNeeded = 2 * minOps + 2 * eqLo + 1;
+    // v7.3: for eqCount=1, tight-budget path only needs 2*N_ops+2 tiles.
+    const minNeeded = eqLo === 1 ? 2 * minOps + 2 : 2 * minOps + 2 * eqLo + 1;
     if (totalTile < minNeeded) {
       throw new Error(
         `เครื่องหมาย = เกิน: ต้องการอย่างน้อย ${minNeeded} tiles ` +
@@ -82,7 +83,10 @@ export function validateDetailedConstraints(cfg) {
   const totalTile = cfg.totalTile;
   const eqRange = toRange(cfg.equalCount);
   const eqCount = eqRange ? clamp(eqRange[0], 1, EQ_MAX_LOCAL) : 1;
-  const opHiClamp = Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
+  // v7.3: for eqCount=1, tight-budget path allows one extra operator.
+  const opHiClamp = eqCount === 1
+    ? Math.min(6, Math.floor((totalTile - 2) / 2))
+    : Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
   const opRange = toRange(cfg.operatorCount);
   const opHi = Math.min(opHiClamp, opRange ? opRange[1] : 3);
   const mins = getOperatorMinMap(cfg.operatorSpec);
@@ -120,7 +124,9 @@ export function isConfigFeasible(cfg) {
   const minEqs  = eqRange   ? clamp(eqRange[0], 1, EQ_MAX_LOCAL)  : 1;
   const maxWild = wildRange ? wildRange[1]                          : 0;
 
-  if (totalTile < 2 * minOps + 2 * minEqs + 1) return false;
+  // v7.3: for eqCount=1, tight-budget path needs only 2*N_ops+2 tiles (not +3).
+  const minTileNeeded = minEqs === 1 ? 2 * minOps + 2 : 2 * minOps + 2 * minEqs + 1;
+  if (totalTile < minTileNeeded) return false;
 
   if (cfg.operatorSpec) {
     const totalMin = Object.values(cfg.operatorSpec)
@@ -212,6 +218,57 @@ export function explainConstraintFailure(cfg) {
     );
   }
   return reasons.join(' ');
+}
+
+// ── Graceful operator-count clamp ─────────────────────────────────────────────
+
+/**
+ * If cfg.operatorCount.min exceeds the structural maximum for this tile count,
+ * return a new cfg with operatorCount clamped and operatorSpec scaled
+ * proportionally.  Returns null when the config is already feasible.
+ */
+export function clampCfgToFeasibleOps(cfg) {
+  const opRange = toRange(cfg.operatorCount);
+  if (!opRange) return null;
+
+  const { totalTile } = cfg;
+  const eqRange = toRange(cfg.equalCount);
+  const minEq   = eqRange ? clamp(eqRange[0], 1, EQ_MAX_LOCAL) : 1;
+  // v7.3: for eqCount=1, the tight-budget path (unary '-' on result) allows one
+  // extra operator: min tiles = 2*N_ops + 2 instead of the standard 2*N_ops + 3.
+  const maxFeasOps = minEq === 1
+    ? Math.max(0, Math.floor((totalTile - 2) / 2))
+    : Math.max(0, Math.floor((totalTile - 2 * minEq - 1) / 2));
+
+  if (opRange[0] <= maxFeasOps) return null; // already feasible
+
+  // Scale operatorSpec mins proportionally to maxFeasOps
+  let newOperatorSpec = null;
+  if (cfg.operatorSpec && maxFeasOps > 0) {
+    const mins     = getOperatorMinMap(cfg.operatorSpec);
+    const totalMin = OPS_ALL.reduce((s, op) => s + mins[op], 0);
+    if (totalMin > 0) {
+      const scaled   = {};
+      let   assigned = 0;
+      for (const op of OPS_ALL) {
+        scaled[op] = Math.floor((mins[op] / totalMin) * maxFeasOps);
+        assigned  += scaled[op];
+      }
+      // Distribute rounding remainder to ops with the largest original weight
+      let remainder = maxFeasOps - assigned;
+      for (const op of [...OPS_ALL].sort((a, b) => mins[b] - mins[a])) {
+        if (remainder <= 0) break;
+        if (mins[op] > 0) { scaled[op]++; remainder--; }
+      }
+      newOperatorSpec = {};
+      for (const op of OPS_ALL) newOperatorSpec[op] = [scaled[op], scaled[op]];
+      // Carry wildcard operators through unchanged
+      if (cfg.operatorSpec['+/-']) newOperatorSpec['+/-'] = cfg.operatorSpec['+/-'];
+      if (cfg.operatorSpec['×/÷']) newOperatorSpec['×/÷'] = cfg.operatorSpec['×/÷'];
+    }
+  }
+
+  return { ...cfg, operatorCount: [maxFeasOps, maxFeasOps], operatorSpec: newOperatorSpec };
 }
 
 // ── Config sanitizer for fallback ─────────────────────────────────────────────

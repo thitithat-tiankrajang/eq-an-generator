@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { maxFeasibleOps, maxFeasibleEqs, EQ_MAX } from '@/lib/bingoMath';
 
 const CORE_OPS = ['+', '-', '×', '÷'];
 const CHOICE_OPS = ['+/-', '×/÷'];
@@ -9,7 +8,7 @@ const OP_SYMBOLS = [...CORE_OPS, ...CHOICE_OPS];
 export const DEFAULT_ADV_CFG = {
   operatorCount: { enabled: false, min: 1, max: 3 },
   heavyCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
-  equalCount:    { enabled: false, min: 1, max: 1 },
+  equalCount:    { enabled: false, min: 1, max: 1, placementEnabled: false, locked: 0, onRack: 0 },
   blankCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
   operatorSpec: Object.fromEntries(
     OP_SYMBOLS.map(op => [op, { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 }])
@@ -49,6 +48,9 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
   if (adv.blankCount?.enabled && adv.blankCount.placementEnabled) {
     tileAssignmentSpec['?'] = { locked: adv.blankCount.locked, onRack: adv.blankCount.onRack };
   }
+  if (adv.equalCount.enabled && adv.equalCount.placementEnabled) {
+    tileAssignmentSpec['='] = { locked: adv.equalCount.locked, onRack: adv.equalCount.onRack };
+  }
 
   if (Object.keys(tileAssignmentSpec).length > 0) cfg.tileAssignmentSpec = tileAssignmentSpec;
 
@@ -69,6 +71,7 @@ function countActive(adv) {
   const placements = [
     adv.heavyCount.placementEnabled,
     adv.blankCount?.placementEnabled,
+    adv.equalCount.placementEnabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].placementEnabled),
   ].filter(Boolean).length;
   return [
@@ -406,11 +409,6 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
     return s + (spec.enabled ? spec.min : 0);
   }, 0);
 
-  // Dynamic max bounds based on totalTile and current settings
-  const curEqMin = advancedCfg.equalCount.enabled ? advancedCfg.equalCount.min : 1;
-  const curOpMin = advancedCfg.operatorCount.enabled ? advancedCfg.operatorCount.min : 0;
-  const dynMaxOps = maxFeasibleOps(totalTile, curEqMin);
-  const dynMaxEqs = Math.min(EQ_MAX, maxFeasibleEqs(totalTile, curOpMin));
 
   return (
     <>
@@ -428,7 +426,7 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
           max={advancedCfg.operatorCount.max}
           onMinChange={v => upd('operatorCount.min', v)}
           onMaxChange={v => upd('operatorCount.max', v)}
-          minBound={0} maxBound={dynMaxOps}
+          minBound={0} maxBound={9}
         />
 
         {/* Per-operator toggle */}
@@ -556,8 +554,19 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
           max={advancedCfg.equalCount.max}
           onMinChange={v => upd('equalCount.min', Math.min(v, advancedCfg.equalCount.max))}
           onMaxChange={v => upd('equalCount.max', Math.max(v, advancedCfg.equalCount.min))}
-          minBound={1} maxBound={dynMaxEqs}
+          minBound={1} maxBound={9}
         />
+        {isCross && advancedCfg.equalCount.enabled && (
+          <PlacementRow
+            placementEnabled={advancedCfg.equalCount.placementEnabled}
+            onToggle={() => upd('equalCount.placementEnabled', !advancedCfg.equalCount.placementEnabled)}
+            locked={advancedCfg.equalCount.locked}
+            onRack={advancedCfg.equalCount.onRack}
+            onLockedChange={v => upd('equalCount.locked', v)}
+            onRackChange={v => upd('equalCount.onRack', v)}
+            budget={advancedCfg.equalCount.min}
+          />
+        )}
         <div className="mt-1.5 px-1 text-[10px] text-stone-400">
           จำนวน = ที่เป็นไปได้ขึ้นอยู่กับ totalTile — generator จะแจ้ง error ถ้า config เป็นไปไม่ได้
         </div>

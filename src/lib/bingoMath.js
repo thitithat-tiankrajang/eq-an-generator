@@ -7,7 +7,7 @@
 
 // ── Core operator / result constants ─────────────────────────────────────────
 export const OPS_ALL    = ['+', '-', '×', '÷'];
-export const RESULT_MIN = 0;
+export const RESULT_MIN = -1000000;
 export const RESULT_MAX = 1000000;
 
 /** Maximum '=' signs supported by the generator (all modes). */
@@ -93,15 +93,32 @@ export function safeEvalL2R(nums, ops) {
 }
 
 // ── Arithmetic evaluators ─────────────────────────────────────────────────────
-
-/** Standard-precedence evaluator (× ÷ before + −). Returns integer or null. */
 export function evalExpr(expr) {
-  const toks = expr.match(/\d+|[+×÷-]/g);
+  let toks = expr.match(/\d+|[+×÷-]/g);
   if (!toks || toks.length === 0) return null;
+
+  // allow unary minus ONLY at the start of this side/expression
+  const merged = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+
+    if (t === '-' && i === 0) {
+      const next = toks[i + 1];
+      if (!next || !/^\d+$/.test(next)) return null;
+
+      merged.push(String(-parseInt(next, 10)));
+      i++;
+    } else {
+      merged.push(t);
+    }
+  }
+
+  toks = merged;
   if (toks.length % 2 === 0) return null;
 
   const nums = [];
-  const ops  = [];
+  const ops = [];
+
   for (let i = 0; i < toks.length; i++) {
     if (i % 2 === 0) {
       const n = parseInt(toks[i], 10);
@@ -113,15 +130,19 @@ export function evalExpr(expr) {
       ops.push(op);
     }
   }
+
   if (ops.length !== nums.length - 1) return null;
 
   const pNums = [nums[0]];
-  const pOps  = [];
+  const pOps = [];
+
   for (let i = 0; i < ops.length; i++) {
-    const op    = ops[i];
+    const op = ops[i];
     const right = nums[i + 1];
+
     if (op === '×' || op === '÷') {
       const left = pNums[pNums.length - 1];
+
       if (op === '×') {
         pNums[pNums.length - 1] = left * right;
       } else {
@@ -138,11 +159,12 @@ export function evalExpr(expr) {
   let v = pNums[0];
   for (let i = 0; i < pOps.length; i++) {
     const op = pOps[i];
-    const r  = pNums[i + 1];
+    const r = pNums[i + 1];
     if (op === '+') v += r;
     else if (op === '-') v -= r;
     else return null;
   }
+
   return v;
 }
 
@@ -160,12 +182,31 @@ function _frac(n, d) {
 }
 
 export function evalExprRational(expr) {
-  const toks = expr.match(/\d+|[+×÷-]/g);
+  let toks = expr.match(/\d+|[+×÷-]/g);
   if (!toks || toks.length === 0) return null;
+
+  // allow unary minus ONLY at the start of this side/expression
+  const merged = [];
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+
+    if (t === '-' && i === 0) {
+      const next = toks[i + 1];
+      if (!next || !/^\d+$/.test(next)) return null;
+
+      merged.push(String(-parseInt(next, 10)));
+      i++;
+    } else {
+      merged.push(t);
+    }
+  }
+
+  toks = merged;
   if (toks.length % 2 === 0) return null;
 
   const nums = [];
-  const ops  = [];
+  const ops = [];
+
   for (let i = 0; i < toks.length; i++) {
     if (i % 2 === 0) {
       const n = parseInt(toks[i], 10);
@@ -177,14 +218,17 @@ export function evalExprRational(expr) {
       ops.push(op);
     }
   }
+
   if (ops.length !== nums.length - 1) return null;
 
   const pNums = [nums[0]];
-  const pOps  = [];
+  const pOps = [];
+
   for (let i = 0; i < ops.length; i++) {
-    const op    = ops[i];
+    const op = ops[i];
     const right = nums[i + 1];
-    const left  = pNums[pNums.length - 1];
+    const left = pNums[pNums.length - 1];
+
     if (op === '×') {
       const r = _frac(left.n * right.n, left.d * right.d);
       if (!r) return null;
@@ -203,12 +247,15 @@ export function evalExprRational(expr) {
   let v = pNums[0];
   for (let i = 0; i < pOps.length; i++) {
     const op = pOps[i];
-    const r  = pNums[i + 1];
+    const r = pNums[i + 1];
+
     if (op === '+') v = _frac(v.n * r.d + r.n * v.d, v.d * r.d);
     else if (op === '-') v = _frac(v.n * r.d - r.n * v.d, v.d * r.d);
     else return null;
+
     if (!v) return null;
   }
+
   return v;
 }
 
@@ -230,6 +277,10 @@ export function isValidEquation(eq, requiredEquals, checkRange = true) {
   if (parts.length - 1 !== requiredEquals) return false;
   if (parts.some(p => p.length === 0)) return false;
 
+  // No special operator-chain rule needed here:
+  // evalExpr / evalExprRational already allow unary '-' only at the start
+  // of each side, so "9=-5+7×2" passes, but "3×-2=-6" fails.
+
   if (checkRange) {
     const vals = parts.map(evalExpr);
     if (vals.some(v => v === null)) return false;
@@ -241,7 +292,6 @@ export function isValidEquation(eq, requiredEquals, checkRange = true) {
     return vals.every(v => v.n === vals[0].n && v.d === vals[0].d);
   }
 }
-
 // ── Difficulty score ──────────────────────────────────────────────────────────
 
 /** scoreEquationDifficulty(eq) — returns 1–10. */

@@ -49,6 +49,7 @@ import {
   isConfigFeasible,
   explainConstraintFailure,
   sanitizeConfigForFallback,
+  clampCfgToFeasibleOps,
 } from './configValidator.js';
 
 // =================================================================
@@ -155,8 +156,11 @@ function computeResolvedTiles(solutionTiles, equation) {
 // SECTION 4 — EQUATION-FIRST BUILDER
 // =================================================================
 
-// v6.2: Pre-filters N_ops to structurally feasible values before random
+// v6.3: Pre-filters N_ops to structurally feasible values before random
 // selection — eliminates wasted retries on impossible operator counts.
+// Tight-budget case (eqCount=1): when numBudget = N_ops+1 (one fewer than
+// the standard N_ops+2 minimum), constructEquationV6 uses N_ops-1 binary
+// operators with a unary '-' on the result (e.g. 8-tile 3-op → "2-9+4=-3").
 function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
   const opRange = toRange(cfg.operatorCount);
   const rawLo = opRange ? opRange[0] : (eqCount >= 3 ? 0 : 1);
@@ -166,7 +170,9 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
   for (let n = rawLo; n <= rawHi; n++) {
     const nb = totalTile - eqCount - n;
     const ns = n + eqCount + 1;
-    if (nb >= ns && nb <= 3 * ns) feasibleOps.push(n);
+    // v6.3: also allow the tight-budget path (eqCount=1, nb = N_ops+1 = ns-1)
+    const tightOk = eqCount === 1 && nb === n + 1;
+    if ((nb >= ns || tightOk) && nb <= 3 * ns) feasibleOps.push(n);
   }
   if (feasibleOps.length === 0) return null;
 
@@ -174,7 +180,9 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
 
   const numBudget = totalTile - eqCount - N_ops;
   const numSlots  = N_ops + eqCount + 1;
-  if (numBudget < numSlots || numBudget > 3 * numSlots) return null;
+  // v6.3: relax lower bound for the tight-budget path
+  const isTight = eqCount === 1 && numBudget === N_ops + 1;
+  if ((numBudget < numSlots && !isTight) || numBudget > 3 * numSlots) return null;
 
   const slack = numBudget - numSlots;
   const MAX_BUILDER_TRIES = eqCount >= 3
@@ -384,6 +392,15 @@ function forceGuaranteedPuzzle(cfg) {
   // ── Deterministic construction ──────────────────────────────────────
   let eq, tiles;
 
+  // Pick the best filler digit available in the pool (prefer 2-9 over 1 to
+  // avoid generating "1" tiles that may be absent from a restricted pool).
+  const fillDigit = (() => {
+    for (const d of ['2','3','4','5','6','7','8','9','1']) {
+      if ((poolDef[d] ?? 0) > 0) return parseInt(d, 10);
+    }
+    return 2;
+  })();
+
   if (targetEqCount === 3) {
     for (let v = 1; v <= 20; v++) {
       const vt = numTiles(v);
@@ -406,9 +423,10 @@ function forceGuaranteedPuzzle(cfg) {
         const numCount = Math.ceil(exprBudget / 2);
         const opCount  = exprBudget - numCount;
         if (opCount < 1) continue;
-        const lastNum = v - (numCount - 1);
+        // Use fillDigit as filler so tile '1' is not required when absent from pool.
+        const lastNum = v - fillDigit * (numCount - 1);
         if (lastNum >= 1 && lastNum <= 9) {
-          const nums = [...Array(numCount - 1).fill(1), lastNum];
+          const nums = [...Array(numCount - 1).fill(fillDigit), lastNum];
           const lhsStr = nums.join('+');
           if (evalExpr(lhsStr) === v) {
             eq = `${lhsStr}=${v}=${v}=${v}`;
@@ -443,9 +461,9 @@ function forceGuaranteedPuzzle(cfg) {
         tiles = [String(v), '=', String(v), '=', String(v)];
         if (tiles.length === totalTile) break;
       }
-      const lastNum = v - (numCount - 1);
+      const lastNum = v - fillDigit * (numCount - 1);
       if (lastNum >= 1 && lastNum <= 9 && opCount >= 1) {
-        const nums = [...Array(numCount - 1).fill(1), lastNum];
+        const nums = [...Array(numCount - 1).fill(fillDigit), lastNum];
         const lhsStr = nums.join('+');
         eq = `${lhsStr}=${v}=${v}`;
         tiles = [];
@@ -463,15 +481,17 @@ function forceGuaranteedPuzzle(cfg) {
   if (!eq || !tiles || tiles.length !== totalTile) {
     if ((totalTile - 1) % 2 === 0) {
       const N = (totalTile - 1) / 2;
-      if (N >= 2 && N <= 9) {
+      const sum = fillDigit * N;
+      if (N >= 2 && N <= 9 && sum >= 1 && sum <= 99) {
         tiles = [];
         for (let i = 0; i < N; i++) {
-          tiles.push('1');
+          tiles.push(String(fillDigit));
           if (i < N - 1) tiles.push('+');
         }
         tiles.push('=');
-        tiles.push(String(N));
+        for (const ch of String(sum)) tiles.push(ch);
         eq = tiles.join('');
+        if (tiles.length !== totalTile) { eq = null; tiles = null; }
       }
     }
   }
@@ -482,9 +502,9 @@ function forceGuaranteedPuzzle(cfg) {
       if (N >= 1) {
         const target = 21;
         const fixed  = N - 1;
-        const last   = target - fixed;
+        const last   = target - fillDigit * fixed;
         if (last >= 1 && last <= 9) {
-          const nums = [...Array(fixed).fill(1), last];
+          const nums = [...Array(fixed).fill(fillDigit), last];
           const lhs  = nums.join('+');
           eq = `${lhs}=${target}`;
           tiles = [];
@@ -498,12 +518,26 @@ function forceGuaranteedPuzzle(cfg) {
     }
   }
 
-  // Absolute last resort
+  // Absolute last resort — find any a+b=c using only pool-available digits.
   if (!eq || !tiles || tiles.length !== totalTile) {
-    const baseTiles = ['1', '+', '2', '=', '3'];
+    // Search for a valid base equation whose digits all exist in the pool.
+    let baseA = null, baseB = null, baseC = null;
+    outer: for (const a of [2,3,4,5,6,7,8,9,1]) {
+      if (!(poolDef[String(a)] > 0)) continue;
+      for (const b of [2,3,4,5,6,7,8,9,1]) {
+        if (!(poolDef[String(b)] > 0)) continue;
+        const c = a + b;
+        if (c >= 0 && c <= 9 && (poolDef[String(c)] ?? 0) > 0) {
+          baseA = a; baseB = b; baseC = c; break outer;
+        }
+      }
+    }
+    if (baseA === null) { baseA = 1; baseB = 2; baseC = 3; } // absolute fallback
+    const sA = String(baseA), sB = String(baseB), sC = String(baseC);
+    const baseTiles = [sA, '+', sB, '=', sC];
     tiles = [...baseTiles];
-    eq = '1+2=3';
-    while (tiles.length < totalTile - 1) tiles.splice(tiles.indexOf('='), 0, '+', '1');
+    eq = `${sA}+${sB}=${sC}`;
+    while (tiles.length < totalTile - 1) tiles.splice(tiles.indexOf('='), 0, '+', sA);
     while (tiles.length > totalTile) {
       const eqIdx = tiles.lastIndexOf('=');
       if (eqIdx > 2) tiles.splice(eqIdx - 2, 2);
@@ -515,12 +549,12 @@ function forceGuaranteedPuzzle(cfg) {
       const lhsTiles = tiles.slice(0, eqIdx);
       const lhsStr   = lhsTiles.join('');
       const lhsVal   = evalExpr(lhsStr);
-      if (lhsVal !== null && lhsVal >= 0 && lhsVal <= 9) {
+      if (lhsVal !== null && lhsVal >= 0 && lhsVal <= 9 && (poolDef[String(lhsVal)] ?? 0) > 0) {
         tiles = [...lhsTiles, '=', String(lhsVal)];
         eq = lhsStr + '=' + lhsVal;
       }
     }
-    while (tiles.length < totalTile) tiles.push('1');
+    while (tiles.length < totalTile) tiles.push(sA);
     tiles = tiles.slice(0, totalTile);
   }
 
@@ -620,6 +654,12 @@ function forceGuaranteedPuzzle(cfg) {
 // =================================================================
 
 export function generateBingo(cfg) {
+  // Clamp operatorCount to the structural maximum before validation so configs
+  // like "8-tile 3-ops all -" silently degrade to "8-tile 2-ops all -" rather
+  // than throwing.  operatorSpec is scaled proportionally.
+  const _clamped = clampCfgToFeasibleOps(cfg);
+  if (_clamped) cfg = _clamped;
+
   validateConfig(cfg);
   validateDetailedConstraints(cfg);
   const { mode, totalTile } = cfg;
@@ -671,7 +711,10 @@ export function generateBingo(cfg) {
   const eqRange          = toRange(cfg.equalCount);
   const eqCountForClamp  = eqRange ? Math.min(eqRange[1], EQ_MAX_LOCAL) : 1;
 
-  const opHiClamp = Math.min(6, Math.floor((totalTile - 2 * eqCountForClamp - 1) / 2));
+  // v6.3: for eqCount=1, tight-budget path allows one extra operator.
+  const opHiClamp = eqCountForClamp === 1
+    ? Math.min(6, Math.floor((totalTile - 2) / 2))
+    : Math.min(6, Math.floor((totalTile - 2 * eqCountForClamp - 1) / 2));
   const opRange   = toRange(cfg.operatorCount);
   const rawOpLo   = opRange ? opRange[0] : (eqCountForClamp >= 3 ? 0 : 1);
   const rawOpHi   = opRange ? opRange[1] : 3;
@@ -780,7 +823,9 @@ export function generateBingo(cfg) {
     const strictOpHiRaw  = opRangeStrict ? opRangeStrict[1] : 3;
 
     for (const eqCount of eqCandidates) {
-      const strictOpHiClamp = Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
+      const strictOpHiClamp = eqCount === 1
+        ? Math.min(6, Math.floor((totalTile - 2) / 2))
+        : Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
       const strictOpLo      = Math.max(0, Math.min(strictOpLoRaw, strictOpHiClamp));
       const strictOpHi      = Math.min(strictOpHiClamp, Math.max(strictOpHiRaw, strictOpLo));
       for (let nOps = strictOpLo; nOps <= strictOpHi; nOps++) {
