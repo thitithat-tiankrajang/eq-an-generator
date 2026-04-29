@@ -170,8 +170,8 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
   for (let n = rawLo; n <= rawHi; n++) {
     const nb = totalTile - eqCount - n;
     const ns = n + eqCount + 1;
-    // v6.3: also allow the tight-budget path (eqCount=1, nb = N_ops+1 = ns-1)
-    const tightOk = eqCount === 1 && nb === n + 1;
+    // v7.4: also allow tight-1 (nb = N_ops+1) and tight-2 (nb = N_ops)
+    const tightOk = eqCount === 1 && (nb === n + 1 || nb === n);
     if ((nb >= ns || tightOk) && nb <= 3 * ns) feasibleOps.push(n);
   }
   if (feasibleOps.length === 0) return null;
@@ -180,8 +180,8 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
 
   const numBudget = totalTile - eqCount - N_ops;
   const numSlots  = N_ops + eqCount + 1;
-  // v6.3: relax lower bound for the tight-budget path
-  const isTight = eqCount === 1 && numBudget === N_ops + 1;
+  // v7.4: relax lower bound for tight-1 and tight-2 paths
+  const isTight = eqCount === 1 && (numBudget === N_ops + 1 || numBudget === N_ops);
   if ((numBudget < numSlots && !isTight) || numBudget > 3 * numSlots) return null;
 
   const slack = numBudget - numSlots;
@@ -202,6 +202,10 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
 
     if (sumCounts(tileCounts) !== totalTile) continue;
     if (!withinPoolLimits(tileCounts, poolDef)) continue;
+    // Soft diversity guard: for early attempts, skip tile sets that are too
+    // repetitive (e.g. {3→2,4→2,5→2} from equations like "33+44=55").
+    // Late attempts (> 65%) accept anything so fallback paths are preserved.
+    if (attempt < (MAX_BUILDER_TRIES * 0.65 | 0) && !_hasDigitDiversity(tileCounts)) continue;
 
     const mutated = mutateTileCountsSmart(tileCounts, cfg, eqCount, poolDef);
     if (!mutated) continue;
@@ -224,6 +228,22 @@ function equationFirstBuilder(totalTile, cfg, eqCount, poolDef = POOL_DEF) {
   }
 
   return null;
+}
+
+/**
+ * _hasDigitDiversity(tc)
+ *
+ * Mirror of the _isDigitDiverse guard in equationConstructors.js.
+ * Checks the (possibly mutated) tile counts used by equationFirstBuilder.
+ * Returns true when single-digit tiles are varied enough:
+ *   unique digit types / total single-digit tiles >= 0.55
+ */
+function _hasDigitDiversity(tc) {
+  let total = 0, unique = 0;
+  for (const [k, v] of Object.entries(tc)) {
+    if (/^[0-9]$/.test(k)) { total += v; unique++; }
+  }
+  return total < 4 || (unique / total) >= 0.55;
 }
 
 const hybridTileBuilder = equationFirstBuilder;
@@ -711,9 +731,9 @@ export function generateBingo(cfg) {
   const eqRange          = toRange(cfg.equalCount);
   const eqCountForClamp  = eqRange ? Math.min(eqRange[1], EQ_MAX_LOCAL) : 1;
 
-  // v6.3: for eqCount=1, tight-budget path allows one extra operator.
+  // v7.4: for eqCount=1, tight-2 path allows two extra operators.
   const opHiClamp = eqCountForClamp === 1
-    ? Math.min(6, Math.floor((totalTile - 2) / 2))
+    ? Math.min(6, Math.floor((totalTile - 1) / 2))
     : Math.min(6, Math.floor((totalTile - 2 * eqCountForClamp - 1) / 2));
   const opRange   = toRange(cfg.operatorCount);
   const rawOpLo   = opRange ? opRange[0] : (eqCountForClamp >= 3 ? 0 : 1);
@@ -824,7 +844,7 @@ export function generateBingo(cfg) {
 
     for (const eqCount of eqCandidates) {
       const strictOpHiClamp = eqCount === 1
-        ? Math.min(6, Math.floor((totalTile - 2) / 2))
+        ? Math.min(6, Math.floor((totalTile - 1) / 2))
         : Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
       const strictOpLo      = Math.max(0, Math.min(strictOpLoRaw, strictOpHiClamp));
       const strictOpHi      = Math.min(strictOpHiClamp, Math.max(strictOpHiRaw, strictOpLo));

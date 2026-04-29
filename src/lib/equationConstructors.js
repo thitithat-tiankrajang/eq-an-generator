@@ -48,6 +48,27 @@ function _initPoolContext(poolDef) {
   }
 }
 
+/**
+ * _isDigitDiverse(tc)
+ *
+ * Returns true when the single-digit tile distribution in `tc` is varied
+ * enough to avoid "334455" style repetition.
+ *
+ * Metric: unique digit-tile types / total single-digit tiles >= 0.55
+ *   {3→2, 4→2, 5→2}: 3/6 = 0.50 → false (too repetitive)
+ *   {3→2, 4→1, 5→1, 6→1, 7→1}: 5/6 = 0.83 → true
+ *
+ * Skipped for small equations (< 4 single-digit tiles) where repetition
+ * is unavoidable or irrelevant.
+ */
+function _isDigitDiverse(tc) {
+  let total = 0, unique = 0;
+  for (const [k, v] of Object.entries(tc)) {
+    if (/^[0-9]$/.test(k)) { total += v; unique++; }
+  }
+  return total < 4 || (unique / total) >= 0.55;
+}
+
 // ── Tile pool definition ──────────────────────────────────────────────────────
 export const POOL_DEF = {
   '0':0, '1':4, '2':4, '3':4, '4':4, '5':4, '6':4, '7':4, '8':4, '9':4,
@@ -93,6 +114,23 @@ function applyNegStart(value, exprStr, p = 0.20) {
   if (value < 0) return { value, expr: exprStr };
   if (!/^\d/.test(exprStr)) return { value, expr: exprStr };
   return { value: -value, expr: '-' + exprStr };
+}
+
+/**
+ * _adjustSpecForUnaryMinuses(opSpec, numUnary)
+ *
+ * Tight-budget paths emit `numUnary` unary '-' tiles automatically.
+ * The binary ops in effectiveLhsOps must together account for the remaining
+ * '-' tiles so the total equals the opSpec constraint.
+ * Returns the adjusted spec, or null if tight path is impossible for this spec
+ * (e.g. spec says {'-': [1,1]} but tight-2 needs 2 unary '-' → impossible).
+ */
+function _adjustSpecForUnaryMinuses(opSpec, numUnary) {
+  if (!opSpec) return opSpec;
+  const minusRange = toRange(opSpec['-']);
+  if (!minusRange) return opSpec;
+  if (minusRange[1] < numUnary) return null;
+  return { ...opSpec, '-': [Math.max(0, minusRange[0] - numUnary), minusRange[1] - numUnary] };
 }
 
 /**
@@ -296,54 +334,115 @@ function buildExprStr(nums, ops) {
 // ================================================================
 
 /**
- * tryBuildEq1Forward_tight  (v7.3)
+ * tryBuildEq1Forward_tight  (v7.5)
  *
- * Handles tight budget: numBudget < lhsOps.length + 2
- * (e.g. 8-tile 3-op 1-eq: numBudget=4, need 5 number slots).
+ * 1-deficit tight path: numBudget = lhsOps.length + 1  (= KL)
+ * One op tile is repurposed as a unary '-'.  Two placements are tried:
  *
- * Key insight: one op tile is repurposed as a unary '-' on the result,
- * so the LHS uses only (N_ops - 1) binary operators:
+ *   Structure A:   n1 OP … n_N = -digit   (unary '-' on result, negative result)
+ *   Structure B:  -n1 OP … n_N =  digit   (unary '-' on LHS prefix, positive result)
  *
- *   n1 OP … n_N = -digit
+ * Tile accounting for N_ops=3, targetTile=8 (both structures):
+ *   LHS nums: 3  |  binary ops: 2  |  =: 1  |  unary '-': 1  |  result: 1  →  8 ✓
  *
- * where N = lhsOps.length (= KL for N-1 binary ops), and the LHS
- * must evaluate to a negative single-digit value in [-9, -1].
- *
- * Tile accounting for N_ops=3, targetTile=8:
- *   LHS numbers : N_ops = 3 tiles  (each single-digit)
- *   Binary ops  : N_ops-1 = 2 tiles
- *   Equal       : 1 tile
- *   Unary '-'   : 1 tile  (the freed 3rd op tile)
- *   Result digit: 1 tile
- *   Total       : 3+2+1+1+1 = 8 ✓
- *
- * Example output: "2-9+4=-3", "1-6+2=-3", "3-7+1=-3"
+ * Structure B covers cases where effectiveLhsOps are all '+' (e.g. +2-1 spec):
+ *   a+b+c is always positive → Structure A never fires → must use Structure B.
+ *   e.g.  -1+3+5 = 7  (tiles: -,1,+,3,+,5,=,7)  ✓ ops: 2×'+', 1×'-'
  */
-function tryBuildEq1Forward_tight(lhsOps, numBudget) {
+function tryBuildEq1Forward_tight(lhsOps, numBudget, opSpec = null) {
   if (lhsOps.length === 0) return null;
 
-  // Drop one op from LHS → it becomes the unary '-' on the result.
-  const effectiveLhsOps = lhsOps.slice(0, -1);
-  const KL = effectiveLhsOps.length + 1;  // number slots on LHS = lhsOps.length
-  const lhsBudgetTotal = numBudget - 1;   // 1 tile reserved for result digit
+  // One op tile becomes a unary '-'; adjust spec to reduce '-' demand by 1.
+  const N_eff = lhsOps.length - 1;
+  const adjSpec = opSpec ? _adjustSpecForUnaryMinuses(opSpec, 1) : null;
+  if (opSpec && adjSpec === null) return null;  // spec incompatible with tight-1
 
+  const lhsBudgetTotal = numBudget - 1;
   if (lhsBudgetTotal < 1) return null;
 
+  const KL = N_eff + 1;
+
   for (let attempt = 0; attempt < 80; attempt++) {
+    // Re-pick effective ops each attempt for variety.
+    const effectiveLhsOps = adjSpec
+      ? pickOperatorsForSpec(N_eff, adjSpec)
+      : shuffle([...lhsOps.slice(0, -1)]);
+    if (!effectiveLhsOps) continue;
+
     const lhsBudgets = lhsBudgetTotal >= KL
       ? distributeTileBudget(lhsBudgetTotal, KL)
       : Array(KL).fill(1);
     if (!lhsBudgets) continue;
 
-    const lhsNums = lhsBudgets.map(b => pickNumForBudget(Math.max(1, b)));
-    const lhsExpr = buildExprStr(lhsNums, effectiveLhsOps);
-    const lhsVal  = evalExpr(lhsExpr);
+    const lhsNums   = lhsBudgets.map(b => pickNumForBudget(Math.max(1, b)));
+    const lhsExprBase = buildExprStr(lhsNums, effectiveLhsOps);
+    const lhsVal      = evalExpr(lhsExprBase);
     if (lhsVal === null) continue;
 
-    // LHS must evaluate to a negative single-digit so the result "-digit"
-    // costs exactly 2 tiles (1 op tile already counted in N_ops + 1 digit tile).
-    if (lhsVal >= -9 && lhsVal <= -1) {
-      const eq = lhsExpr + '=' + String(lhsVal);
+    // Structure A: expr = -d  (negative result)
+    if (lhsVal >= -20 && lhsVal <= -1 && numTiles(Math.abs(lhsVal)) === 1) {
+      const eq = lhsExprBase + '=' + String(lhsVal);
+      if (isValidEquation(eq, 1)) return eq;
+    }
+
+    // Structure B: -expr = d  (positive result, unary '-' prefixes first number)
+    const lhsExprNeg = '-' + lhsExprBase;
+    const lhsValNeg  = evalExpr(lhsExprNeg);
+    if (lhsValNeg !== null && lhsValNeg >= 0 && numTiles(lhsValNeg) === 1) {
+      const eq = lhsExprNeg + '=' + String(lhsValNeg);
+      if (isValidEquation(eq, 1)) return eq;
+    }
+  }
+  return null;
+}
+
+/**
+ * tryBuildEq1Forward_tight2  (v7.4)
+ *
+ * 2-deficit tight path: numBudget = lhsOps.length  (= KL - 1)
+ * Two op tiles are repurposed as unary minuses: one prefixes the LHS
+ * expression, one prefixes the result.
+ *
+ *   -n1 OP … n_{N-1} = -digit
+ *
+ * Tile accounting for N_ops=4, targetTile=9:
+ *   unary LHS '-': 1  |  LHS nums: 3  |  binary ops: 2  |  =: 1
+ *   unary result '-': 1  |  result digit: 1  →  total 9 ✓
+ */
+function tryBuildEq1Forward_tight2(lhsOps, numBudget, opSpec = null) {
+  if (lhsOps.length < 2) return null;
+
+  // tight-2 always emits 2 unary '-' (LHS prefix + result prefix); adjust spec.
+  const N_eff = lhsOps.length - 2;
+  const adjSpec = opSpec ? _adjustSpecForUnaryMinuses(opSpec, 2) : null;
+  if (opSpec && adjSpec === null) return null;  // spec incompatible with tight-2
+
+  const KL = N_eff + 1;
+  const lhsBudgetTotal = numBudget - 1;   // 1 tile reserved for result digit
+
+  if (lhsBudgetTotal < KL) return null;
+
+  for (let attempt = 0; attempt < 100; attempt++) {
+    // Re-pick effective ops each attempt for variety.
+    const effectiveLhsOps = N_eff === 0
+      ? []
+      : adjSpec
+        ? pickOperatorsForSpec(N_eff, adjSpec)
+        : shuffle([...lhsOps.slice(0, -2)]);
+    if (N_eff > 0 && !effectiveLhsOps) continue;
+
+    const ops = effectiveLhsOps ?? [];
+    const lhsBudgets = distributeTileBudget(lhsBudgetTotal, KL);
+    if (!lhsBudgets) continue;
+
+    const lhsNums    = lhsBudgets.map(b => pickNumForBudget(Math.max(1, b)));
+    const lhsExprBase = buildExprStr(lhsNums, ops);
+    const lhsExprNeg = '-' + lhsExprBase;
+    const lhsVal     = evalExpr(lhsExprNeg);
+    if (lhsVal === null) continue;
+
+    if (lhsVal >= -20 && lhsVal <= -1 && numTiles(Math.abs(lhsVal)) === 1) {
+      const eq = lhsExprNeg + '=' + String(lhsVal);
       if (isValidEquation(eq, 1)) return eq;
     }
   }
@@ -360,15 +459,22 @@ function tryBuildEq1Forward_tight(lhsOps, numBudget) {
  */
 function tryBuildEq1Forward(lhsOps, numBudget, opSpec = null) {
   const KL = lhsOps.length + 1;
-  // v7.3: explicit tight-budget check — distributeTileBudget(numBudget, KL+1)
-  // may still succeed in this case (returns all-1 arrays) but would produce
-  // a (KL+1)-number equation that is one tile too long.
+  // v7.4: 2-deficit tight path (e.g. 9-tile 4-op, 11-tile 5-op).
+  if (numBudget < KL) {
+    return tryBuildEq1Forward_tight2(lhsOps, numBudget, opSpec);
+  }
+  // v7.3: 1-deficit tight path (e.g. 8-tile 3-op, 10-tile 4-op).
   if (numBudget < KL + 1) {
-    return tryBuildEq1Forward_tight(lhsOps, numBudget);
+    return tryBuildEq1Forward_tight(lhsOps, numBudget, opSpec);
+  }
+  // Boundary case: also sprinkle negative-result equations for variety.
+  if (numBudget === KL + 1 && Math.random() < 0.25) {
+    const tightEq = tryBuildEq1Forward_tight(lhsOps, numBudget, opSpec);
+    if (tightEq) return tightEq;
   }
   const budgets = distributeTileBudget(numBudget, KL + 1);
   if (!budgets) {
-    return tryBuildEq1Forward_tight(lhsOps, numBudget);
+    return tryBuildEq1Forward_tight(lhsOps, numBudget, opSpec);
   }
 
   const lhsBudgets = budgets.slice(0, KL);
@@ -418,12 +524,19 @@ function tryBuildEq1Forward(lhsOps, numBudget, opSpec = null) {
  */
 function tryBuildEq1Flip(rhsOps, numBudget, opSpec = null) {
   const KR = rhsOps.length + 1;
+  if (numBudget < KR) {
+    return tryBuildEq1Forward_tight2(rhsOps, numBudget, opSpec);
+  }
   if (numBudget < KR + 1) {
-    return tryBuildEq1Forward_tight(rhsOps, numBudget);
+    return tryBuildEq1Forward_tight(rhsOps, numBudget, opSpec);
+  }
+  if (numBudget === KR + 1 && Math.random() < 0.25) {
+    const tightEq = tryBuildEq1Forward_tight(rhsOps, numBudget, opSpec);
+    if (tightEq) return tightEq;
   }
   const budgets = distributeTileBudget(numBudget, KR + 1);
   if (!budgets) {
-    return tryBuildEq1Forward_tight(rhsOps, numBudget);
+    return tryBuildEq1Forward_tight(rhsOps, numBudget, opSpec);
   }
 
   const resultBudget = budgets[0];
@@ -1157,6 +1270,10 @@ export function constructEquationV6(N_ops, eqCount, targetTile, opSpec, poolDef 
       // Reject equations whose digit tiles exceed pool supply — avoids wasting
       // external retries on equations that can never be represented by the tile bag.
       if (!withinPoolLimits(tc, poolDef)) continue;
+      // Soft diversity guard: skip repetitive digit sets (e.g. "33+44=55" → tiles
+      // 3,3,4,4,5,5) for the first 65% of tries. The remaining tries accept anything,
+      // preserving fallback coverage when diverse equations are rare.
+      if (t < (MAX_TRIES * 0.65 | 0) && !_isDigitDiverse(tc)) continue;
     } catch {
       continue;
     }
@@ -1179,6 +1296,7 @@ export function constructEquationV6(N_ops, eqCount, targetTile, opSpec, poolDef 
       const tc = equationToTileCounts(eq, { preferHeavy: true });
       if (sumCounts(tc) !== targetTile) continue;
       if (!withinPoolLimits(tc, poolDef)) continue;
+      if (t < (fallbackTries * 0.5 | 0) && !_isDigitDiverse(tc)) continue;
       if (!_passesMinusTileFilter(eq)) continue;
       return eq;
     } catch { /* ignore */ }

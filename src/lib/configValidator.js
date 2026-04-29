@@ -46,8 +46,8 @@ export function validateConfig(cfg) {
 
     const opRange = toRange(cfg.operatorCount);
     const minOps = opRange ? opRange[0] : 0;
-    // v7.3: for eqCount=1, tight-budget path only needs 2*N_ops+2 tiles.
-    const minNeeded = eqLo === 1 ? 2 * minOps + 2 : 2 * minOps + 2 * eqLo + 1;
+    // v7.4: for eqCount=1, tight-2 path only needs 2*N_ops+1 tiles.
+    const minNeeded = eqLo === 1 ? 2 * minOps + 1 : 2 * minOps + 2 * eqLo + 1;
     if (totalTile < minNeeded) {
       throw new Error(
         `เครื่องหมาย = เกิน: ต้องการอย่างน้อย ${minNeeded} tiles ` +
@@ -83,9 +83,9 @@ export function validateDetailedConstraints(cfg) {
   const totalTile = cfg.totalTile;
   const eqRange = toRange(cfg.equalCount);
   const eqCount = eqRange ? clamp(eqRange[0], 1, EQ_MAX_LOCAL) : 1;
-  // v7.3: for eqCount=1, tight-budget path allows one extra operator.
+  // v7.4: for eqCount=1, tight-2 path allows two extra operators.
   const opHiClamp = eqCount === 1
-    ? Math.min(6, Math.floor((totalTile - 2) / 2))
+    ? Math.min(6, Math.floor((totalTile - 1) / 2))
     : Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
   const opRange = toRange(cfg.operatorCount);
   const opHi = Math.min(opHiClamp, opRange ? opRange[1] : 3);
@@ -124,8 +124,8 @@ export function isConfigFeasible(cfg) {
   const minEqs  = eqRange   ? clamp(eqRange[0], 1, EQ_MAX_LOCAL)  : 1;
   const maxWild = wildRange ? wildRange[1]                          : 0;
 
-  // v7.3: for eqCount=1, tight-budget path needs only 2*N_ops+2 tiles (not +3).
-  const minTileNeeded = minEqs === 1 ? 2 * minOps + 2 : 2 * minOps + 2 * minEqs + 1;
+  // v7.4: for eqCount=1, tight-2 path needs only 2*N_ops+1 tiles.
+  const minTileNeeded = minEqs === 1 ? 2 * minOps + 1 : 2 * minOps + 2 * minEqs + 1;
   if (totalTile < minTileNeeded) return false;
 
   if (cfg.operatorSpec) {
@@ -234,10 +234,10 @@ export function clampCfgToFeasibleOps(cfg) {
   const { totalTile } = cfg;
   const eqRange = toRange(cfg.equalCount);
   const minEq   = eqRange ? clamp(eqRange[0], 1, EQ_MAX_LOCAL) : 1;
-  // v7.3: for eqCount=1, the tight-budget path (unary '-' on result) allows one
-  // extra operator: min tiles = 2*N_ops + 2 instead of the standard 2*N_ops + 3.
+  // v7.4: for eqCount=1, the tight-2 path (unary '-' on both sides) allows two
+  // extra operators: min tiles = 2*N_ops + 1.
   const maxFeasOps = minEq === 1
-    ? Math.max(0, Math.floor((totalTile - 2) / 2))
+    ? Math.max(0, Math.floor((totalTile - 1) / 2))
     : Math.max(0, Math.floor((totalTile - 2 * minEq - 1) / 2));
 
   if (opRange[0] <= maxFeasOps) return null; // already feasible
