@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "@/api/apiClient";
-import { Users, Shield, CheckCircle2, XCircle, Clock, FileText, FlaskConical } from "lucide-react";
+import { Users, Shield, CheckCircle2, XCircle, Clock, FileText, FlaskConical, TestTube2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { PuzzlePdfGenerator } from "@/components/bingo/PuzzlePdfGenerator";
 import { GeneratorAnalysis } from "@/components/bingo/GeneratorAnalysis";
+import { ConfigTestDashboard } from "@/components/bingo/ConfigTestDashboard";
 
 export default function AdminPanel() {
   const [users, setUsers] = useState([]);
@@ -112,6 +113,9 @@ export default function AdminPanel() {
             <TabsTrigger value="analysis" className="flex items-center gap-1.5">
               <FlaskConical className="w-3.5 h-3.5" /> Generator Test
             </TabsTrigger>
+            <TabsTrigger value="configtest" className="flex items-center gap-1.5">
+              <TestTube2 className="w-3.5 h-3.5" /> Config Test
+            </TabsTrigger>
           </TabsList>
 
           {/* Pending Approvals */}
@@ -211,6 +215,16 @@ export default function AdminPanel() {
           {/* Generator Analysis */}
           <TabsContent value="analysis" className="mt-4">
             <GeneratorAnalysis />
+          </TabsContent>
+
+          {/* Config Test Suite */}
+          <TabsContent value="configtest" className="mt-4">
+            <div className="mb-3 px-1">
+              <p className="text-xs text-stone-500 font-mono">
+                Test all generator configs — each run tries {/* ATTEMPTS_PER_CONFIG */}10 times and reports pass/fail + example equations
+              </p>
+            </div>
+            <ConfigTestDashboard />
           </TabsContent>
         </Tabs>
       </div>

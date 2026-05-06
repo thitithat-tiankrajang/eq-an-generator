@@ -6,6 +6,7 @@ const OP_SYMBOLS = [...CORE_OPS, ...CHOICE_OPS];
 
 // ── Default state ─────────────────────────────────────────────────────────────
 export const DEFAULT_ADV_CFG = {
+  algorithm:     'pattern', // 'pattern' | 'backtrack'
   operatorCount: { enabled: false, min: 1, max: 3 },
   heavyCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
   equalCount:    { enabled: false, min: 1, max: 1, placementEnabled: false, locked: 0, onRack: 0 },
@@ -19,6 +20,8 @@ export const DEFAULT_ADV_CFG = {
 export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
   const cfg = { mode, totalTile };
   if (poolDef) cfg.poolDef = poolDef;
+
+  if ((adv.algorithm ?? 'pattern') === 'backtrack') cfg.algorithm = 'backtrack';
 
   if (adv.operatorCount.enabled)
     cfg.operatorCount = [adv.operatorCount.min, adv.operatorCount.max];
@@ -68,6 +71,7 @@ function deepUpdate(obj, path, value) {
 }
 
 function countActive(adv) {
+  const algorithmActive = (adv.algorithm ?? 'pattern') !== 'pattern' ? 1 : 0;
   const placements = [
     adv.heavyCount.placementEnabled,
     adv.blankCount?.placementEnabled,
@@ -80,7 +84,7 @@ function countActive(adv) {
     adv.blankCount?.enabled,
     adv.equalCount.enabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].enabled),
-  ].filter(Boolean).length + placements;
+  ].filter(Boolean).length + placements + algorithmActive;
 }
 
 // ── NumStepper ────────────────────────────────────────────────────────────────
@@ -410,8 +414,42 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
   }, 0);
 
 
+  const algorithm = advancedCfg.algorithm ?? 'pattern';
+
   return (
     <>
+      {/* ── Algorithm ── */}
+      <section className="mt-4">
+        <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">
+          Algorithm
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { id: 'pattern',   label: 'Pattern',   desc: 'Fast random-pattern search' },
+            { id: 'backtrack', label: 'Backtrack',  desc: 'Systematic structure-first DFS' },
+          ].map(({ id, label, desc }) => {
+            const active = algorithm === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={(e) => { e.stopPropagation(); upd('algorithm', id); }}
+                className={`flex flex-col items-start px-3 py-2.5 rounded-xl border-2 text-left transition-colors cursor-pointer min-h-[44px] ${
+                  active
+                    ? 'border-amber-400 bg-amber-50'
+                    : 'border-stone-200 bg-stone-50 hover:border-amber-300 hover:bg-amber-50/60'
+                }`}
+              >
+                <span className={`text-xs font-bold ${active ? 'text-amber-800' : 'text-stone-500'}`}>
+                  {label}
+                </span>
+                <span className="text-[10px] text-stone-400 mt-0.5 leading-tight">{desc}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
       {/* ── A: Operators ── */}
       <section className="mt-4">
         <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">

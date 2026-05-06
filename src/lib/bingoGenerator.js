@@ -34,6 +34,9 @@ import { POOL_DEF, constructEquationV6, constructEquation } from './equationCons
 // ─── DFS solver + cache ───────────────────────────────────────────────────────
 import { findEquationsFromTiles, _dfsLookupOrRun, getDfsCacheStats } from './dfsSolver.js';
 
+// ─── Backtrack algorithm (alternative builder) ────────────────────────────────
+import { equationFirstBuilderBacktrack } from './bingoBacktrackAlgorithm.js';
+
 // ─── Board builder ────────────────────────────────────────────────────────────
 import { buildBoard, optimizeBoardLayout, RACK_SIZE } from './boardBuilder.js';
 
@@ -674,11 +677,25 @@ function forceGuaranteedPuzzle(cfg) {
 // =================================================================
 
 export function generateBingo(cfg) {
+  console.log('[generateBingo] called with cfg:', JSON.stringify({
+    mode: cfg.mode, totalTile: cfg.totalTile, algorithm: cfg.algorithm ?? 'pattern',
+    operatorCount: cfg.operatorCount ?? null,
+    operatorSpec: cfg.operatorSpec ?? null,
+    heavyCount: cfg.heavyCount ?? null,
+    blankCount: cfg.blankCount ?? null,
+    equalCount: cfg.equalCount ?? null,
+  }));
+
   // Clamp operatorCount to the structural maximum before validation so configs
   // like "8-tile 3-ops all -" silently degrade to "8-tile 2-ops all -" rather
   // than throwing.  operatorSpec is scaled proportionally.
   const _clamped = clampCfgToFeasibleOps(cfg);
-  if (_clamped) cfg = _clamped;
+  if (_clamped) {
+    console.log('[generateBingo] clampCfgToFeasibleOps applied →', JSON.stringify({
+      operatorCount: _clamped.operatorCount, operatorSpec: _clamped.operatorSpec
+    }));
+    cfg = _clamped;
+  }
 
   validateConfig(cfg);
   validateDetailedConstraints(cfg);
@@ -698,23 +715,52 @@ export function generateBingo(cfg) {
   const timedOut    = () => (Date.now() - startMs) > wallBudgetMs;
   const poolDefResolved = cfg.poolDef ?? POOL_DEF;
 
+  // Algorithm selection: 'backtrack' uses structure-first DFS; default is 'pattern'.
+  // When backtrack exhausts its sample budget (returns null), fall back to the
+  // pattern builder so the overall board generation never fails due to algorithm
+  // choice alone.
+  const useBacktrack = cfg.algorithm === 'backtrack';
+  console.log('[generateBingo] algorithm:', useBacktrack ? 'backtrack' : 'pattern');
+  const _runBuilder  = (tryCfg, eqCnt, pd) => {
+    if (useBacktrack) {
+      console.log('[generateBingo] _runBuilder → calling equationFirstBuilderBacktrack',
+        { totalTile, eqCnt, operatorSpec: tryCfg.operatorSpec ?? null });
+      const bt = equationFirstBuilderBacktrack(totalTile, tryCfg, eqCnt, pd);
+      if (bt !== null) {
+        console.log('[generateBingo] backtrack SUCCESS → equation:', bt.seedEquation);
+        return bt;
+      }
+      console.warn('[generateBingo] backtrack EXHAUSTED → falling back to pattern builder');
+    }
+    return equationFirstBuilder(totalTile, tryCfg, eqCnt, pd);
+  };
+
   const tryBuildResultFromBuilt = (built, eqCount, boardCfg = cfg) => {
     if (!built) return null;
-    const { tileCounts, seedEquation } = built;
-    const analysis = analyzeCounts(tileCounts);
+    const { tileCounts, seedEquation, solutionTiles } = built;
     let chosen;
-    if (analysis.wilds === 0) {
-      const srcTiles = equationToSourceTiles(seedEquation);
-      if (!srcTiles || srcTiles.length !== totalTile) return null;
-      chosen = { eq: seedEquation, tiles: srcTiles };
+    if (solutionTiles) {
+      // Backtrack result: tile ordering comes directly from the DFS.
+      // Skip equationToSourceTiles (which would collapse digit pairs into
+      // heavy-tile tokens and break the length invariant).
+      if (solutionTiles.length !== totalTile) return null;
+      chosen = { eq: seedEquation, tiles: solutionTiles };
     } else {
-      const found = _dfsLookupOrRun(tileCounts, eqCount);
-      if (!found.length) return null;
-      chosen = found.reduce((best, c) => {
-        const flex     = c.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
-        const bestFlex = best.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
-        return flex < bestFlex ? c : best;
-      });
+      // Pattern result: existing resolve logic.
+      const analysis = analyzeCounts(tileCounts);
+      if (analysis.wilds === 0) {
+        const srcTiles = equationToSourceTiles(seedEquation);
+        if (!srcTiles || srcTiles.length !== totalTile) return null;
+        chosen = { eq: seedEquation, tiles: srcTiles };
+      } else {
+        const found = _dfsLookupOrRun(tileCounts, eqCount);
+        if (!found.length) return null;
+        chosen = found.reduce((best, c) => {
+          const flex     = c.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
+          const bestFlex = best.tiles.filter(t => t === '?' || t === '+/-' || t === '×/÷').length;
+          return flex < bestFlex ? c : best;
+        });
+      }
     }
     return _buildBoardResult(mode, chosen, tileCounts, seedEquation, boardCfg, totalTile, eqCount);
   };
@@ -729,7 +775,8 @@ export function generateBingo(cfg) {
   }
 
   const eqRange          = toRange(cfg.equalCount);
-  const eqCountForClamp  = eqRange ? Math.min(eqRange[1], EQ_MAX_LOCAL) : 1;
+  // clamp to at least 1: toRange([null,null]) returns [0,0], not null, so Math.min would give 0
+  const eqCountForClamp  = eqRange ? Math.max(1, Math.min(eqRange[1], EQ_MAX_LOCAL)) : 1;
 
   // v7.4: for eqCount=1, tight-2 path allows two extra operators.
   const opHiClamp = eqCountForClamp === 1
@@ -824,7 +871,7 @@ export function generateBingo(cfg) {
       }
     }
 
-    const built = equationFirstBuilder(totalTile, tryCfg, eqCount, tryCfg.poolDef ?? POOL_DEF);
+    const built = _runBuilder(tryCfg, eqCount, tryCfg.poolDef ?? POOL_DEF);
     if (!built) continue;
 
     const result = tryBuildResultFromBuilt(built, eqCount, cfg);
@@ -834,9 +881,10 @@ export function generateBingo(cfg) {
   // Custom constraints: deep strict pass
   if (hasCustomConstraints) {
     const eqRangeStrict = toRange(cfg.equalCount);
-    const eqCandidates  = eqRangeStrict
-      ? Array.from({ length: eqRangeStrict[1] - eqRangeStrict[0] + 1 }, (_, i) => eqRangeStrict[0] + i)
-      : [1];
+    // Guard against toRange([null,null]) = [0,0]: clamp both ends to at least 1
+    const eqStrictLo = eqRangeStrict ? Math.max(1, Math.min(eqRangeStrict[0], EQ_MAX_LOCAL)) : 1;
+    const eqStrictHi = eqRangeStrict ? Math.max(1, Math.min(eqRangeStrict[1], EQ_MAX_LOCAL)) : 1;
+    const eqCandidates = Array.from({ length: eqStrictHi - eqStrictLo + 1 }, (_, i) => eqStrictLo + i);
 
     const opRangeStrict  = toRange(cfg.operatorCount);
     const strictOpLoRaw  = opRangeStrict ? opRangeStrict[0] : 0;
@@ -852,7 +900,7 @@ export function generateBingo(cfg) {
         const strictCfg  = { ...cfg, operatorCount: [nOps, nOps] };
         const deepTries  = eqCount >= 3 ? 200 : 120;
         for (let deepTry = 0; deepTry < deepTries; deepTry++) {
-          const built  = equationFirstBuilder(totalTile, strictCfg, eqCount, poolDefResolved);
+          const built  = _runBuilder(strictCfg, eqCount, poolDefResolved);
           const result = tryBuildResultFromBuilt(built, eqCount, cfg);
           if (result) return result;
         }

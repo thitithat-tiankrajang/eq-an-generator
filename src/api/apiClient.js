@@ -96,6 +96,11 @@ export const api = {
         
     },
   },
+  configTests: {
+    getAll:    ()       => request('GET',    '/config-tests'),
+    saveBatch: (results)=> request('POST',   '/config-tests/batch', { results }),
+    clearAll:  ()       => request('DELETE', '/config-tests'),
+  },
   assignments: {
     admin: {
       create: (body) => request('POST', '/assignments', body),

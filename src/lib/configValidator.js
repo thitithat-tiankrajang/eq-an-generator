@@ -88,14 +88,25 @@ export function validateDetailedConstraints(cfg) {
     ? Math.min(6, Math.floor((totalTile - 1) / 2))
     : Math.min(6, Math.floor((totalTile - 2 * eqCount - 1) / 2));
   const opRange = toRange(cfg.operatorCount);
-  const opHi = Math.min(opHiClamp, opRange ? opRange[1] : 3);
   const mins = getOperatorMinMap(cfg.operatorSpec);
   const minRequiredOps = mins['+'] + mins['-'] + mins['×'] + mins['÷'];
+  // When operatorCount is not explicitly set, use the structural maximum
+  // (opHiClamp) rather than a hardcoded 3. The old default of 3 incorrectly
+  // rejected operatorSpec configs that require 4+ operators on sufficient tiles.
+  const opHiDefault = opRange ? opRange[1] : opHiClamp;
+  const opHi = Math.min(opHiClamp, opHiDefault);
+
+  console.log('[configValidator] validateDetailedConstraints:',
+    { totalTile, eqCount, opHiClamp, opHiDefault, opHi, minRequiredOps,
+      operatorSpec: cfg.operatorSpec ?? null, operatorCount: cfg.operatorCount ?? null });
+
   if (minRequiredOps > opHi) {
+    console.error('[configValidator] THROW: minRequiredOps', minRequiredOps, '> opHi', opHi);
     throw new Error(
       `Operator constraints require at least ${minRequiredOps} operators, but this setup allows at most ${opHi}.`
     );
   }
+  console.log('[configValidator] validateDetailedConstraints PASSED ✓');
 
   if (cfg.poolDef) {
     for (const op of OPS_ALL) {
@@ -136,7 +147,8 @@ export function isConfigFeasible(cfg) {
     if (totalMin > maxOps) return false;
   }
 
-  const minNumSlots = Math.max(1, minOps + 1);
+  // tight-2 path (eqCount=1): N operators only need N number tiles (unary minus handles slots)
+  const minNumSlots = minEqs === 1 ? Math.max(1, minOps) : Math.max(1, minOps + 1);
   if (maxWild > totalTile - minOps - minEqs - minNumSlots) return false;
 
   const poolDef = cfg.poolDef ?? POOL_DEF;

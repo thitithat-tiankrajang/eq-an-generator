@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { BingoAdvancedConfig, DEFAULT_ADV_CFG } from '@/components/bingo/BingoAdvancedConfig';
 import { api } from '@/api/apiClient';
 
@@ -39,6 +39,28 @@ export function BingoConfig({
   onTileSetsLoaded = null,
 }) {
   const totalPuzzles = puzzleSets.reduce((s, p) => s + (Number(p.count) || 1), 0);
+
+  // ── Elapsed time while loading ────────────────────────────────────────────
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const loadStartRef = useRef(null);
+  const elapsedTimerRef = useRef(null);
+
+  useEffect(() => {
+    if (loading) {
+      loadStartRef.current = performance.now();
+      setElapsedMs(0);
+      elapsedTimerRef.current = setInterval(() => {
+        setElapsedMs(performance.now() - (loadStartRef.current ?? performance.now()));
+      }, 100);
+    } else {
+      clearInterval(elapsedTimerRef.current);
+      elapsedTimerRef.current = null;
+      setElapsedMs(0);
+    }
+    return () => clearInterval(elapsedTimerRef.current);
+  }, [loading]);
+
+  const elapsedSec = (elapsedMs / 1000).toFixed(1);
 
   // ── Fetch tile sets once ──────────────────────────────────────────────────
   const [tileSets, setTileSets] = useState([]);
@@ -168,15 +190,27 @@ export function BingoConfig({
         <button
           onClick={onGenerate}
           disabled={loading}
-          className={`flex-1 py-4 rounded-xl border-2 font-bold text-sm tracking-wide transition-all cursor-pointer
+          className={`flex-1 py-4 rounded-xl border-2 font-bold text-sm tracking-wide transition-all cursor-pointer relative overflow-hidden
             ${loading
-              ? 'border-stone-200 bg-stone-100 text-stone-400 cursor-not-allowed'
+              ? 'border-amber-300 bg-amber-50 text-amber-600 cursor-not-allowed'
               : 'border-amber-600 bg-amber-600 text-white hover:bg-amber-700 hover:border-amber-700 active:scale-[0.99]'}`}
         >
-          {loading && genProgress
-            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>{genProgress.done} / {genProgress.total}</span>
+          {/* Shimmer sweep while loading */}
+          {loading && (
+            <span className="absolute inset-0 -translate-x-full animate-[shimmer_1.4s_ease-in-out_infinite] bg-linear-to-r from-transparent via-amber-200/60 to-transparent" />
+          )}
+          {loading && genProgress && genProgress.total > 1
+            ? <span className="inline-flex items-center gap-2 relative">
+                <span className="inline-block w-4 h-4 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+                {genProgress.done} / {genProgress.total} puzzles
+                <span className="text-amber-400 font-normal text-xs">{elapsedSec}s</span>
+              </span>
             : loading
-            ? <span className="inline-flex items-center gap-2"><span className="inline-block animate-spin">◌</span>Generating…</span>
+            ? <span className="inline-flex items-center gap-2 relative">
+                <span className="inline-block w-4 h-4 rounded-full border-2 border-amber-400 border-t-transparent animate-spin" />
+                Generating…
+                <span className="text-amber-400 font-normal text-xs">{elapsedSec}s</span>
+              </span>
             : `${genCount > 0 ? 'Regenerate' : 'Generate'} (${totalPuzzles} puzzle${totalPuzzles !== 1 ? 's' : ''})`
           }
         </button>
@@ -191,14 +225,25 @@ export function BingoConfig({
         )}
       </div>
 
-      {/* ── Progress bar ── */}
-      {loading && genProgress && (
+      {/* ── Progress bar (multi-puzzle) / indeterminate pulse (single) ── */}
+      {loading && (
         <div className="mt-2 h-1.5 bg-stone-200 rounded-full overflow-hidden">
-          <div
-            className="h-full bg-amber-500 transition-all duration-150 rounded-full"
-            style={{ width: `${(genProgress.done / genProgress.total) * 100}%` }}
-          />
+          {genProgress && genProgress.total > 1 ? (
+            <div
+              className="h-full bg-amber-500 transition-all duration-150 rounded-full"
+              style={{ width: `${Math.max(4, (genProgress.done / genProgress.total) * 100)}%` }}
+            />
+          ) : (
+            <div className="h-full w-1/3 bg-amber-400 rounded-full animate-[indeterminate_1.2s_ease-in-out_infinite]" />
+          )}
         </div>
+      )}
+
+      {/* ── Slow-generation hint (>3 s, single puzzle) ── */}
+      {loading && elapsedMs > 3000 && (!genProgress || genProgress.total <= 1) && (
+        <p className="mt-1.5 text-center text-[10px] text-amber-500 animate-pulse">
+          กำลังหา pattern ที่ตรงกับ constraints… ({elapsedSec}s)
+        </p>
       )}
 
       {error && (

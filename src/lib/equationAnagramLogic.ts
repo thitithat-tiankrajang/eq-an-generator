@@ -575,7 +575,26 @@ function generateTokensDeterministic(options: EquationAnagramOptions, customToke
 } */
 
 /**
- * Structure-first backtracking equation finder (replaces permutation-based search)
+ * Structure-first backtracking equation finder (replaces permutation-based search).
+ *
+ * Key improvements over the original:
+ *
+ * 1. minTokensRequired structural pruning — each DFS call computes the minimum
+ *    number of tiles still needed to complete any valid equation from the current
+ *    phase.  Branches where remaining < min are cut immediately, eliminating
+ *    large subtrees that can never yield a result.
+ *
+ * 2. canAdvanceFromNumber — fixes a silent correctness bug where the old
+ *    hasAnyOperatorAvailable() guard did NOT include literal '=' in its check,
+ *    so any path whose only remaining non-number token was '=' (e.g. finishing
+ *    the last operand before '=3') was pruned even though the equation was valid.
+ *
+ * 3. Early viability gate — '?' is now counted as a potential operator/equals
+ *    source in the upfront hasSomeOperator check, so token sets that rely
+ *    entirely on blanks for operators are no longer rejected before the DFS.
+ *
+ * Everything else (unary minus, blanks, choice tokens, heavy tiles,
+ * multi-digit composition, onFound callback, MAX_RESULTS cap) is unchanged.
  */
 function findValidEquations(tokens: EquationElement[], equalsCount: number, onFound?: (eq: string, parts: string[]) => void): string[] {
   const MAX_RESULTS = 10;
@@ -584,11 +603,11 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
 
   const tokenValues = tokens.map(t => t.originalToken);
 
-  // Quick viability checks
+  // Quick viability checks — '?' counts since it can stand for any symbol
   const hasSomeNumber = tokenValues.some(v => /^\d+$/.test(v));
-  const hasSomeOperator = tokenValues.some(v => ['+', '-', '×', '÷', '+/-', '×/÷'].includes(v));
+  const hasSomeOperatorOrBlank = tokenValues.some(v => ['+', '-', '×', '÷', '+/-', '×/÷', '?'].includes(v));
   const hasEqualsOrBlank = tokenValues.some(v => v === '=' || v === '?');
-  if (!hasSomeNumber || !hasSomeOperator || !hasEqualsOrBlank) {
+  if (!hasSomeNumber || !hasSomeOperatorOrBlank || !hasEqualsOrBlank) {
     return [];
   }
 
@@ -602,26 +621,54 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
   const OPS: ReadonlyArray<string> = ['+','-','×','÷'];
   const BLANK_REPLACEMENTS: ReadonlyArray<string> = ['=', '+', '-', '×', '÷', '+/-', '×/÷', ...LIGHT_DIGITS, '10', '12', '0'];
 
-  const tokensRemaining = () => Object.values(counts).reduce((s, n) => s + n, 0);
+  // O(1) counter — maintained by consume/unconsume so every dfs call is a simple read
+  let remaining = tokenValues.length;
+
   const canPlaceMoreEquals = (used: number) => {
     const availableEquals = (counts['='] || 0) + (counts['?'] || 0);
     return (requiredEquals - used) <= availableEquals;
   };
-  const hasAnyOperatorAvailable = () => OPS.some(op => (counts[op] || 0) > 0) || (counts['+/-'] || 0) > 0 || (counts['×/÷'] || 0) > 0 || (counts['?'] || 0) > 0;
 
+  // Structural lower bound on remaining tiles needed to form a valid equation.
+  //
+  //   start:         LHS-num (= RHS-num)+          → 2·required + 1
+  //   afterNumber:   (op num)* (= num)+             → 2·equalsLeft
+  //   afterOperator: num (op num)* (= num)+         → 2·equalsLeft + 1
+  //   afterEquals:   num (op num)* (= num)*         → 2·equalsLeft + 1
+  //                  (equalsLeft = 0 → 1 for the final RHS number)
+  //
+  // These are conservative: they assume no operators between the equals signs,
+  // which minimises the required count.  If remaining < min, no valid equation
+  // can be built from this branch — prune.
   type Phase = 'start' | 'afterNumber' | 'afterOperator' | 'afterEquals';
+  function minTokensRequired(phase: Phase, usedEq: number): number {
+    const equalsLeft = requiredEquals - usedEq;
+    switch (phase) {
+      case 'start':         return 2 * requiredEquals + 1;
+      case 'afterNumber':   return 2 * equalsLeft;
+      case 'afterOperator': return 2 * equalsLeft + 1;
+      case 'afterEquals':   return 2 * equalsLeft + 1;
+    }
+  }
+
+  // Whether any next symbol can legally be placed after a number.
+  // FIX: the old hasAnyOperatorAvailable() omitted literal '=', causing valid
+  // equations like 1+2=3 to be pruned when the only remaining non-number tile
+  // was '='.  This version includes '=' when we still need one.
+  const canAdvanceFromNumber = (usedEq: number): boolean => {
+    const hasOp = OPS.some(op => (counts[op] || 0) > 0)
+      || (counts['+/-'] || 0) > 0
+      || (counts['×/÷'] || 0) > 0
+      || (counts['?'] || 0) > 0;
+    const hasEq = usedEq < requiredEquals && (counts['='] || 0) > 0;
+    return hasOp || hasEq;
+  };
+
   const equationParts: string[] = [];
   const tileParts: string[] = [];
 
-  function consume(token: string) { counts[token] = (counts[token] || 0) - 1; }
-  function unconsume(token: string) { counts[token] = (counts[token] || 0) + 1; }
-
-  // function* sourcesForSymbol(symbol: string): Generator<string> {
-  //   if ((counts[symbol] || 0) > 0) yield symbol; // direct
-  //   if ((symbol === '+' || symbol === '-') && (counts['+/-'] || 0) > 0) yield '+/-';
-  //   if ((symbol === '×' || symbol === '÷') && (counts['×/÷'] || 0) > 0) yield '×/÷';
-  //   if ((counts['?'] || 0) > 0 && BLANK_REPLACEMENTS.includes(symbol)) yield '?';
-  // }
+  function consume(token: string) { counts[token] = (counts[token] || 0) - 1; remaining--; }
+  function unconsume(token: string) { counts[token] = (counts[token] || 0) + 1; remaining++; }
 
   function yieldIfValid(eq: string, usedEquals: number) {
     if (usedEquals !== requiredEquals) return;
@@ -634,7 +681,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
   }
 
   function canStartNumber(zeroAllowed: boolean): boolean {
-    // If only zeros/blanks left and zero not allowed, fail
     if (!zeroAllowed) {
       const nonZeroCandidate = HEAVY_NUMBERS.some(h => (counts[h] || 0) > 0) ||
         LIGHT_DIGITS.some(d => (counts[d] || 0) > 0);
@@ -651,7 +697,7 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
   function buildNumber(usedEquals: number, zeroAllowed: boolean) {
     if (results.size >= MAX_RESULTS) return;
 
-    // Heavy numbers
+    // Heavy numbers — single tile, stands alone
     for (const h of HEAVY_NUMBERS) {
       if ((counts[h] || 0) > 0) {
         equationParts.push(h); consume(h);
@@ -665,7 +711,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
     // Blank as limited heavy (10 or 12)
     for (const h of ['10','12']) {
       if ((counts['?'] || 0) > 0) {
-        // Use a blank to represent this heavy
         consume('?'); equationParts.push(h);
         tileParts.push(h);
         dfs('afterNumber', usedEquals);
@@ -736,7 +781,10 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
     if (results.size >= MAX_RESULTS) return;
     if (!canPlaceMoreEquals(usedEquals)) return;
 
-    if (tokensRemaining() === 0) {
+    // Structural pruning: cut branches that can't possibly form a complete equation
+    if (remaining < minTokensRequired(phase, usedEquals)) return;
+
+    if (remaining === 0) {
       if (phase === 'afterNumber' && usedEquals === requiredEquals) {
         const eq = equationParts.join('');
         yieldIfValid(eq, usedEquals);
@@ -748,7 +796,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
       case 'start': {
         // Try unary minus at start (e.g., -1-2=-4+1)
         const tryUnaryAtStart = () => {
-          // direct '-'
           if ((counts['-'] || 0) > 0) {
             equationParts.push('-'); consume('-');
             tileParts.push('-');
@@ -756,42 +803,33 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             tileParts.pop();
             unconsume('-'); equationParts.pop();
           }
-    
-          // choice '+/-' used as '-'
           if ((counts['+/-'] || 0) > 0) {
             equationParts.push('-'); consume('+/-');
-            tileParts.push('+/-'); // token จริง
+            tileParts.push('+/-');
             if (canStartNumber(false)) buildNumber(usedEquals, false);
             tileParts.pop();
             unconsume('+/-'); equationParts.pop();
           }
-    
-          // blank '?' used as '-'
           if ((counts['?'] || 0) > 0) {
             equationParts.push('-'); consume('?');
-            tileParts.push('?'); // token จริง
+            tileParts.push('?');
             if (canStartNumber(false)) buildNumber(usedEquals, false);
             tileParts.pop();
             unconsume('?'); equationParts.pop();
           }
         };
-    
         tryUnaryAtStart();
         if (results.size >= MAX_RESULTS) return;
-    
-        // Also try starting with a number directly
-        if (canStartNumber(true)) {
-          buildNumber(usedEquals, true);
-        }
+        if (canStartNumber(true)) buildNumber(usedEquals, true);
         return;
       }
-    
+
       case 'afterNumber': {
-        if (!hasAnyOperatorAvailable()) return;
-    
-        // try equals
+        // Fixed: includes '=' in availability check (old guard missed this)
+        if (!canAdvanceFromNumber(usedEquals)) return;
+
+        // try '=' — do this before binary ops so we close the equation sooner
         if (usedEquals < requiredEquals) {
-          // '=' direct
           if ((counts['='] || 0) > 0) {
             equationParts.push('='); consume('=');
             tileParts.push('=');
@@ -800,8 +838,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             unconsume('='); equationParts.pop();
             if (results.size >= MAX_RESULTS) return;
           }
-    
-          // blank '?' used as '='
           if ((counts['?'] || 0) > 0) {
             equationParts.push('='); consume('?');
             tileParts.push('?');
@@ -811,10 +847,9 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             if (results.size >= MAX_RESULTS) return;
           }
         }
-    
+
         // try binary operators (+,-,×,÷) via direct, choice or blank
         for (const op of OPS) {
-          // direct op
           if ((counts[op] || 0) > 0) {
             equationParts.push(op); consume(op);
             tileParts.push(op);
@@ -823,8 +858,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             unconsume(op); equationParts.pop();
             if (results.size >= MAX_RESULTS) return;
           }
-    
-          // choice '+/-' used as '+' or '-'
           if ((op === '+' || op === '-') && (counts['+/-'] || 0) > 0) {
             equationParts.push(op); consume('+/-');
             tileParts.push('+/-');
@@ -833,8 +866,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             unconsume('+/-'); equationParts.pop();
             if (results.size >= MAX_RESULTS) return;
           }
-    
-          // choice '×/÷' used as '×' or '÷'
           if ((op === '×' || op === '÷') && (counts['×/÷'] || 0) > 0) {
             equationParts.push(op); consume('×/÷');
             tileParts.push('×/÷');
@@ -843,8 +874,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             unconsume('×/÷'); equationParts.pop();
             if (results.size >= MAX_RESULTS) return;
           }
-    
-          // blank '?' used as op
           if ((counts['?'] || 0) > 0 && BLANK_REPLACEMENTS.includes(op)) {
             equationParts.push(op); consume('?');
             tileParts.push('?');
@@ -854,20 +883,18 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             if (results.size >= MAX_RESULTS) return;
           }
         }
-    
         return;
       }
-    
+
       case 'afterOperator': {
         if (!canStartNumber(true)) return;
         buildNumber(usedEquals, true);
         return;
       }
-    
+
       case 'afterEquals': {
-        // optional unary minus before number: from '-', '+/-' or '?'
+        // optional unary minus after '='
         const tryUnary = () => {
-          // direct '-'
           if ((counts['-'] || 0) > 0) {
             equationParts.push('-'); consume('-');
             tileParts.push('-');
@@ -875,8 +902,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             tileParts.pop();
             unconsume('-'); equationParts.pop();
           }
-    
-          // choice '+/-' used as '-'
           if ((counts['+/-'] || 0) > 0) {
             equationParts.push('-'); consume('+/-');
             tileParts.push('+/-');
@@ -884,8 +909,6 @@ function findValidEquations(tokens: EquationElement[], equalsCount: number, onFo
             tileParts.pop();
             unconsume('+/-'); equationParts.pop();
           }
-    
-          // blank '?' used as '-'
           if ((counts['?'] || 0) > 0) {
             equationParts.push('-'); consume('?');
             tileParts.push('?');
@@ -1376,8 +1399,54 @@ export function findAllPossibleEquations(elements: string[]): string[] {
       value: el,
       originalToken: el as AmathToken
     }));
-    
+
     return findValidEquations(tokens, 1);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Result type returned by findEquationsWithTiles.
+ * `tiles` is the source-tile ordering produced by the DFS —
+ * individual digit tiles are preserved as-is even when they form
+ * a multi-digit number in the equation (e.g. ['1','2'] for "12").
+ */
+export interface EquationWithTiles {
+  equation: string;
+  tiles: string[];
+}
+
+/**
+ * Backtrack-DFS equation search that also returns the tile ordering.
+ *
+ * Like findAllPossibleEquations but with configurable equalsCount and
+ * with per-equation tile arrays so callers can reconstruct solutionTiles
+ * without re-running equationToSourceTiles (which would collapse digit
+ * pairs into heavy-tile tokens and break the count invariant).
+ */
+export function findEquationsWithTiles(
+  elements: string[],
+  equalsCount: number = 1,
+): EquationWithTiles[] {
+  try {
+    const tokens: EquationElement[] = elements.map(el => ({
+      type: getElementType(el),
+      value: el,
+      originalToken: el as AmathToken,
+    }));
+
+    const seen = new Set<string>();
+    const results: EquationWithTiles[] = [];
+
+    findValidEquations(tokens, Math.max(equalsCount, 1), (eq, tiles) => {
+      if (!seen.has(eq)) {
+        seen.add(eq);
+        results.push({ equation: eq, tiles: [...tiles] });
+      }
+    });
+
+    return results;
   } catch {
     return [];
   }
