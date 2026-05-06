@@ -13,6 +13,7 @@ import PlayAssignment from './pages/PlayAssignment';
 import AssignmentDetail from './pages/AssignmentDetail';
 import AdminAssignmentDetail from './pages/AdminAssignmentDetail';
 import CreateAssignment from './pages/CreateAssignment';
+import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const { Pages, Layout, mainPage } = pagesConfig;
 const mainPageKey = mainPage ?? Object.keys(Pages)[0];
@@ -100,6 +101,7 @@ function App() {
         <Router>
           <AuthenticatedApp />
         </Router>
+        <SpeedInsights />
         <Toaster />
         <SonnerToaster />
       </QueryClientProvider>
