@@ -12,7 +12,32 @@ const TILE_CSS = 'var(--rack-tile, calc(var(--board-tile) * 1.06))';
 export function BingoRack({ rackTiles, selected, onTileClick, onEmptySlotClick, onRecallAll }) {
   const remaining = rackTiles.filter(Boolean).length;
   const total     = rackTiles.length;
+  const OP_ORDER = ['+', '-', '×', '÷', '+/-', '×/÷', '=', '?'];
 
+  function sortRackTilesWithIndex(rackTiles) {
+    return rackTiles
+      .map((tile, index) => ({ tile, index }))
+      .sort((a, b) => {
+        if (!a.tile) return 1;
+        if (!b.tile) return -1;
+  
+        const av = a.tile.tile;
+        const bv = b.tile.tile;
+  
+        const an = parseFloat(av);
+        const bn = parseFloat(bv);
+  
+        const aNum = !isNaN(an);
+        const bNum = !isNaN(bn);
+  
+        if (aNum && bNum) return an - bn;
+        if (aNum) return -1;
+        if (bNum) return 1;
+  
+        // 👇 ใช้ list อย่างเดียว
+        return OP_ORDER.indexOf(av) - OP_ORDER.indexOf(bv);
+      });
+  }
 
   return (
     <div className="bg-white rounded-2xl border border-stone-300 shadow-md p-3 mb-3">
@@ -43,41 +68,46 @@ export function BingoRack({ rackTiles, selected, onTileClick, onEmptySlotClick, 
 
       {/* Tiles */}
       <div className="overflow-x-auto">
-      <div className="flex gap-1 w-max mx-auto">
-        {rackTiles.map((t, i) => {
-          const isSelected = selected?.source === 'rack' && selected.index === i;
+        <div className="flex gap-1 w-max mx-auto">
+          {sortRackTilesWithIndex(rackTiles).map(({ tile: t, index: originalIndex }) => {
+            const isSelected =
+              selected?.source === 'rack' && selected.index === originalIndex;
 
-          if (t === null) {
-            const isBoardSelected = selected?.source === 'board';
+            if (t === null) {
+              const isBoardSelected = selected?.source === 'board';
+              return (
+                <button
+                  key={`empty-${originalIndex}`}
+                  type="button"
+                  onClick={() => onEmptySlotClick(originalIndex)}
+                  style={{ width: TILE_CSS, height: TILE_CSS }}
+                  className={`rounded-lg border-2 border-dashed flex items-center justify-center transition-colors cursor-pointer
+                    ${
+                      isBoardSelected
+                        ? 'border-blue-300 bg-blue-50'
+                        : 'border-stone-200 bg-stone-50'
+                    }`}
+                >
+                  {isBoardSelected && (
+                    <span className="text-blue-300 text-xl font-bold leading-none">+</span>
+                  )}
+                </button>
+              );
+            }
+
             return (
-              <button
-                key={`empty-${i}`}
-                type="button"
-                onClick={() => onEmptySlotClick(i)}
-                style={{ width: TILE_CSS, height: TILE_CSS }}
-                className={`rounded-lg border-2 border-dashed flex items-center justify-center transition-colors cursor-pointer
-                  ${isBoardSelected
-                    ? 'border-blue-300 bg-blue-50'
-                    : 'border-stone-200 bg-stone-50'}`}
-              >
-                {isBoardSelected && <span className="text-blue-300 text-xl font-bold leading-none">+</span>}
-              </button>
+              <BingoTile
+                key={t.id}
+                token={t.tile}
+                role={isSelected ? 'selected' : 'rack'}
+                size="lg"
+                onClick={() => onTileClick(originalIndex)}
+                points={TILE_POINTS[t.tile] ?? 0}
+                dimCss={TILE_CSS}
+              />
             );
-          }
-
-          return (
-            <BingoTile
-              key={t.id}
-              token={t.tile}
-              role={isSelected ? 'selected' : 'rack'}
-              size="lg"
-              onClick={() => onTileClick(i)}
-              points={TILE_POINTS[t.tile] ?? 0}
-              dimCss={TILE_CSS}
-            />
-          );
-        })}
-      </div>
+          })}
+        </div>
       </div>
     </div>
   );
