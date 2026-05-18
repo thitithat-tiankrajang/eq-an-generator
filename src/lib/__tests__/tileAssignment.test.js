@@ -9,7 +9,11 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildGeneratorConfig, DEFAULT_ADV_CFG } from '@/components/bingo/BingoAdvancedConfig.jsx';
+import {
+  buildGeneratorConfig,
+  DEFAULT_ADV_CFG,
+  __test_deepUpdate as deepUpdate,
+} from '@/components/bingo/BingoAdvancedConfig.jsx';
 import { applyTileAssignmentToPlacement, HEAVY_SET } from '@/lib/bingoGenerator.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -701,5 +705,125 @@ describe('digitSpec — applyTileAssignmentToPlacement', () => {
     const plusProbs = [out.slotProbs[2], out.slotProbs[4]].sort((a, b) => b - a);
     expect(plusProbs[0]).toBe(2);
     expect(plusProbs[1]).toBe(0);
+  });
+});
+
+// ─── 6. deepUpdate forward-compat + legacy-cfg defence ────────────────────
+//
+// Regression coverage for the runtime crash users hit when clicking the
+// new Normal Tile / per-digit placement controls with an advancedCfg
+// loaded from localStorage that was saved before those fields existed:
+//
+//   Uncaught TypeError: Cannot set properties of undefined
+//                       (setting 'placementEnabled')
+//   Uncaught TypeError: Cannot read properties of undefined (reading '…')
+//
+// Root cause: deepUpdate('normalTileCount.placementEnabled', true) walked
+// `obj['normalTileCount']` which was undefined on the legacy cfg, then
+// tried to set `.placementEnabled` on undefined.  countActive +
+// buildGeneratorConfig had matching read-side hazards.
+
+describe('deepUpdate — forward-compat on legacy cfgs', () => {
+  it('auto-creates missing intermediate object when setting a fresh nested key', () => {
+    const legacy = { foo: { bar: 1 } };  // no `normalTileCount` at all
+    const next = deepUpdate(legacy, 'normalTileCount.placementEnabled', true);
+    expect(next.normalTileCount).toEqual({ placementEnabled: true });
+    expect(next.foo).toEqual({ bar: 1 });   // siblings untouched
+    expect(legacy.normalTileCount).toBeUndefined();  // immutable: original not mutated
+  });
+
+  it('does not crash when path traverses multiple missing levels', () => {
+    const legacy = {};
+    const next = deepUpdate(legacy, 'digitSpec.5.enabled', true);
+    expect(next.digitSpec).toEqual({ '5': { enabled: true } });
+  });
+
+  it('updates existing values without recreating the parent object', () => {
+    const cfg = { heavyCount: { enabled: false, min: 0, max: 2 } };
+    const next = deepUpdate(cfg, 'heavyCount.enabled', true);
+    expect(next.heavyCount.enabled).toBe(true);
+    expect(next.heavyCount.min).toBe(0);    // preserved
+    expect(next.heavyCount.max).toBe(2);    // preserved
+  });
+
+  it('replaces a non-object intermediate with {} rather than silently failing', () => {
+    // Defensive: a cfg accidentally serialised with `digitSpec = "stale"`
+    // should still let the user toggle a digit on, not crash.
+    const corrupt = { digitSpec: 'stale-string' };
+    const next = deepUpdate(corrupt, 'digitSpec.5.enabled', true);
+    expect(next.digitSpec).toEqual({ '5': { enabled: true } });
+  });
+
+  it('reproduces the original user-reported scenarios end-to-end', () => {
+    // The exact toggle paths used by the Normal Tile and per-digit UI sections.
+    const legacyCfg = {  // shape pre-PR-#1 + pre-PR-#2: no digitSpec, no normalTileCount
+      algorithm: 'pattern',
+      operatorCount: { enabled: false, min: 1, max: 3 },
+      heavyCount: { enabled: false, min: 0, max: 2 },
+      operatorSpec: {},
+    };
+    // Toggle Normal Tile placement — used to throw
+    expect(() => deepUpdate(legacyCfg, 'normalTileCount.placementEnabled', true)).not.toThrow();
+    // Toggle per-digit placement — used to throw
+    expect(() => deepUpdate(legacyCfg, 'digitSpec.7.enabled', true)).not.toThrow();
+    // Edit a lock count after toggle — also used to throw
+    let cfg = deepUpdate(legacyCfg, 'normalTileCount.placementEnabled', true);
+    cfg = deepUpdate(cfg, 'normalTileCount.locked', 2);
+    expect(cfg.normalTileCount).toEqual({ placementEnabled: true, locked: 2 });
+  });
+});
+
+describe('buildGeneratorConfig — accepts legacy/partial cfgs without crashing', () => {
+  it('handles a cfg missing normalTileCount + digitSpec entirely', () => {
+    const legacy = {
+      algorithm: 'pattern',
+      operatorCount: { enabled: false, min: 1, max: 3 },
+      heavyCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
+      blankCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
+      equalCount:    { enabled: false, min: 1, max: 1, placementEnabled: false, locked: 0, onRack: 0 },
+      operatorSpec:  {},
+      // no digitSpec, no normalTileCount
+    };
+    expect(() => buildGeneratorConfig('cross', 9, legacy)).not.toThrow();
+    const cfg = buildGeneratorConfig('cross', 9, legacy);
+    expect(cfg.mode).toBe('cross');
+    expect(cfg.totalTile).toBe(9);
+    expect(cfg.tileAssignmentSpec).toBeUndefined();
+  });
+
+  it('handles a cfg missing operatorSpec entirely', () => {
+    const legacy = {
+      algorithm: 'pattern',
+      operatorCount: { enabled: false, min: 1, max: 3 },
+      heavyCount: { enabled: false, min: 0, max: 2 },
+      // no operatorSpec
+    };
+    expect(() => buildGeneratorConfig('plain', 9, legacy)).not.toThrow();
+  });
+
+  it('handles cfg missing heavyCount/blankCount/equalCount (very legacy)', () => {
+    const legacy = { algorithm: 'pattern', operatorSpec: {} };
+    expect(() => buildGeneratorConfig('cross', 9, legacy)).not.toThrow();
+    const cfg = buildGeneratorConfig('cross', 9, legacy);
+    expect(cfg.heavyCount).toBeUndefined();
+    expect(cfg.blankCount).toBeUndefined();
+    expect(cfg.equalCount).toBeUndefined();
+  });
+
+  it('still respects an explicit empty {} cfg without throwing', () => {
+    expect(() => buildGeneratorConfig('cross', 9, {})).not.toThrow();
+  });
+
+  it('round-trip: legacy cfg → deepUpdate toggle → buildGeneratorConfig works', () => {
+    // The full user journey: load old cfg, toggle Normal Tile on,
+    // generate.  Used to crash at step 2 before this fix.
+    let cfg = {  // legacy
+      operatorSpec: {},
+    };
+    cfg = deepUpdate(cfg, 'normalTileCount.placementEnabled', true);
+    cfg = deepUpdate(cfg, 'normalTileCount.locked', 2);
+    cfg = deepUpdate(cfg, 'normalTileCount.onRack', 1);
+    const generatorCfg = buildGeneratorConfig('cross', 9, cfg);
+    expect(generatorCfg.tileAssignmentSpec['__normal__']).toEqual({ locked: 2, onRack: 1 });
   });
 });
