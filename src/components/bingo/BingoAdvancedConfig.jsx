@@ -3,6 +3,13 @@ import { useState } from 'react';
 const CORE_OPS = ['+', '-', '×', '÷'];
 const CHOICE_OPS = ['+/-', '×/÷'];
 const OP_SYMBOLS = [...CORE_OPS, ...CHOICE_OPS];
+const DIGIT_SYMBOLS = ['0','1','2','3','4','5','6','7','8','9'];
+
+// Per-digit placement uses the standard A-Math pool cap (4 of each digit).
+// applyTileAssignmentToPlacement clamps `locked`/`onRack` to the number of
+// that digit actually present in the realised equation, so user-input above
+// this cap is harmless but visually misleading — keep the stepper bounded.
+const DIGIT_POOL_CAP = 4;
 
 // ── Default state ─────────────────────────────────────────────────────────────
 export const DEFAULT_ADV_CFG = {
@@ -13,6 +20,13 @@ export const DEFAULT_ADV_CFG = {
   blankCount:    { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 },
   operatorSpec: Object.fromEntries(
     OP_SYMBOLS.map(op => [op, { enabled: false, min: 0, max: 2, placementEnabled: false, locked: 0, onRack: 0 }])
+  ),
+  // Per-digit placement (cross mode only).  Unlike operator/heavy/blank, digits
+  // do NOT carry a min/max count constraint — `enabled` directly gates the
+  // placement clamp.  Schema mirrors the placement half of the other entries
+  // so tileAssignmentSpec can be built with the same code path.
+  digitSpec: Object.fromEntries(
+    DIGIT_SYMBOLS.map(d => [d, { enabled: false, locked: 0, onRack: 0 }])
   ),
 };
 
@@ -55,6 +69,17 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
     tileAssignmentSpec['='] = { locked: adv.equalCount.locked, onRack: adv.equalCount.onRack };
   }
 
+  // Per-digit placement: applyTileAssignmentToPlacement keys on the literal
+  // digit character (catOf returns the tile itself for non-heavy tiles), so
+  // we can write the spec straight in.
+  if (adv.digitSpec) {
+    for (const [digit, v] of Object.entries(adv.digitSpec)) {
+      if (v?.enabled) {
+        tileAssignmentSpec[digit] = { locked: v.locked ?? 0, onRack: v.onRack ?? 0 };
+      }
+    }
+  }
+
   if (Object.keys(tileAssignmentSpec).length > 0) cfg.tileAssignmentSpec = tileAssignmentSpec;
 
   return cfg;
@@ -78,13 +103,16 @@ function countActive(adv) {
     adv.equalCount.placementEnabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].placementEnabled),
   ].filter(Boolean).length;
+  const digitsActive = adv.digitSpec
+    ? DIGIT_SYMBOLS.filter(d => adv.digitSpec[d]?.enabled).length
+    : 0;
   return [
     adv.operatorCount.enabled,
     adv.heavyCount.enabled,
     adv.blankCount?.enabled,
     adv.equalCount.enabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].enabled),
-  ].filter(Boolean).length + placements + algorithmActive;
+  ].filter(Boolean).length + placements + algorithmActive + digitsActive;
 }
 
 // ── NumStepper ────────────────────────────────────────────────────────────────
@@ -332,6 +360,83 @@ function PlacementRow({
   );
 }
 
+/**
+ * DigitPlacementCard
+ *
+ * Compact per-digit (0-9) placement card.  Unlike OperatorCard there is no
+ * min/max count — the digit count is implied by the equation.  The card
+ * only exposes:
+ *   • ON / ANY toggle    (enable placement constraint for this digit)
+ *   • lock / rack steppers when enabled
+ *
+ * Runtime safety: applyTileAssignmentToPlacement clamps `locked` to the
+ * number of this digit actually present in the realised equation, so an
+ * over-request (e.g. lock=4 when only 1 of the digit appears) silently
+ * degrades to the achievable cap rather than blocking generation.
+ */
+function DigitPlacementCard({ digit, spec, upd, poolCap = DIGIT_POOL_CAP }) {
+  const safeLocked = Math.max(0, Math.min(spec.locked ?? 0, poolCap));
+  const safeRack   = Math.max(0, Math.min(spec.onRack ?? 0, poolCap - safeLocked));
+  const maxLocked  = poolCap - safeRack;
+  const maxRack    = poolCap - safeLocked;
+
+  return (
+    <div
+      onClick={() => upd(`digitSpec.${digit}.enabled`, !spec.enabled)}
+      className={`rounded-xl border-2 p-2 transition-colors cursor-pointer ${
+        spec.enabled
+          ? 'bg-sky-50 border-sky-400'
+          : 'bg-stone-50 border-stone-200'
+      }`}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <span className={`font-mono font-bold text-sm ${
+          spec.enabled ? 'text-sky-700' : 'text-stone-500'
+        }`}>
+          {digit}
+        </span>
+
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            upd(`digitSpec.${digit}.enabled`, !spec.enabled);
+          }}
+          className="text-[10px] px-2 py-1 rounded bg-stone-200 text-stone-600"
+        >
+          {spec.enabled ? 'ON' : 'ANY'}
+        </button>
+      </div>
+
+      {/* Placement controls */}
+      {spec.enabled && (
+        <div className="mt-2 flex flex-col sm:grid sm:grid-cols-2 gap-2">
+          <div className="flex items-center justify-between bg-white rounded-lg px-2 py-2 border border-stone-200">
+            <span className="text-[11px] font-bold text-stone-600">lock</span>
+            <NumStepper
+              size="sm"
+              value={safeLocked}
+              min={0}
+              max={maxLocked}
+              onChange={(v) => upd(`digitSpec.${digit}.locked`, Math.min(v, maxLocked))}
+            />
+          </div>
+          <div className="flex items-center justify-between bg-white rounded-lg px-2 py-2 border border-stone-200">
+            <span className="text-[11px] font-bold text-stone-600">rack</span>
+            <NumStepper
+              size="sm"
+              value={safeRack}
+              min={0}
+              max={maxRack}
+              onChange={(v) => upd(`digitSpec.${digit}.onRack`, Math.min(v, maxRack))}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── OperatorCard ──────────────────────────────────────────────────────────────
 function OperatorCard({ op, spec, upd, isCross, maxForOp }) {
   const budget = spec.min;
@@ -402,9 +507,13 @@ function OperatorCard({ op, spec, upd, isCross, maxForOp }) {
 // ── AdvancedConfigBody ────────────────────────────────────────────────────────
 function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }) {
   const [opExpand, setOpExpand] = useState(false);
+  const [digitExpand, setDigitExpand] = useState(false);
   const upd = (path, value) => setAdvancedCfg(prev => deepUpdate(prev, path, value));
   const active = countActive(advancedCfg);
   const anyOpSpecActive = OP_SYMBOLS.some(op => advancedCfg.operatorSpec[op].enabled);
+  const anyDigitActive = advancedCfg.digitSpec
+    ? DIGIT_SYMBOLS.some(d => advancedCfg.digitSpec[d]?.enabled)
+    : false;
   const isCross = mode === 'cross';
 
   // Derived: sum of all per-op minimums = effective minimum total operators
@@ -609,7 +718,62 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
           จำนวน = ที่เป็นไปได้ขึ้นอยู่กับ totalTile — generator จะแจ้ง error ถ้า config เป็นไปไม่ได้
         </div>
       </section>
-    
+
+      {/* ── E: Digits (0–9) placement ── */}
+      <section>
+        <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">
+          E — Digits <span className="text-stone-400 font-normal">(0–9)</span>
+        </div>
+
+        {/* Plain mode has no board, so placement is meaningless there. */}
+        {!isCross ? (
+          <div className="px-3 py-2 rounded-lg bg-stone-50 border border-stone-200 text-[10px] text-stone-400">
+            Digit placement is available in <span className="font-semibold text-stone-500">cross</span> mode only
+            (plain mode delivers every tile to the rack).
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setDigitExpand(o => !o)}
+              className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border-2 border-dashed border-stone-300 hover:border-sky-400 hover:bg-sky-50 transition-colors cursor-pointer min-h-[44px]"
+            >
+              <span className="text-xs font-medium text-stone-600">
+                Per-digit placement
+                <span className="text-stone-400 ml-1 text-[9px]">lock / rack</span>
+              </span>
+              <div className="flex items-center gap-1.5">
+                {anyDigitActive && (
+                  <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-700 text-[10px] font-bold">
+                    {DIGIT_SYMBOLS.filter(d => advancedCfg.digitSpec?.[d]?.enabled).length} set
+                  </span>
+                )}
+                <span className="text-stone-500 text-[11px] font-bold">{digitExpand ? '▲' : '▼'}</span>
+              </div>
+            </button>
+
+            {digitExpand && (
+              <div className="mt-1.5 space-y-1.5">
+                <div className="text-[10px] text-stone-400 px-1 mb-1">
+                  Pick how many copies of each digit must land on the <span className="font-semibold text-stone-500">board</span> (lock)
+                  vs the <span className="font-semibold text-stone-500">rack</span>. The runtime clamps to the digit's actual count in the equation.
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {DIGIT_SYMBOLS.map(d => (
+                    <DigitPlacementCard
+                      key={d}
+                      digit={d}
+                      spec={advancedCfg.digitSpec?.[d] ?? { enabled: false, locked: 0, onRack: 0 }}
+                      upd={upd}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
 
       {/* Reset */}
       {active > 0 && (

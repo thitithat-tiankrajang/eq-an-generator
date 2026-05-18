@@ -382,3 +382,149 @@ describe('DEFAULT_ADV_CFG', () => {
     expect(cfg.operatorCount).toBeUndefined();
   });
 });
+
+// ─── 4. Per-digit placement (0-9) ────────────────────────────────────────────
+//
+// Mirrors the heavy / blank / operator placement plumbing but for individual
+// digit tiles.  The generator side already accepts any literal-tile key in
+// `tileAssignmentSpec` (see applyTileAssignmentToPlacement's `catOf` —
+// non-heavy tiles map to themselves) so the wiring is config-only: when a
+// digit's `digitSpec[d].enabled` is true, buildGeneratorConfig must emit
+// `tileAssignmentSpec[d] = { locked, onRack }`.
+
+describe('digitSpec — buildGeneratorConfig', () => {
+  it('DEFAULT_ADV_CFG has digitSpec for every digit 0-9, all disabled', () => {
+    expect(DEFAULT_ADV_CFG.digitSpec).toBeDefined();
+    for (let d = 0; d <= 9; d++) {
+      const entry = DEFAULT_ADV_CFG.digitSpec[String(d)];
+      expect(entry).toBeDefined();
+      expect(entry.enabled).toBe(false);
+      expect(entry.locked).toBe(0);
+      expect(entry.onRack).toBe(0);
+    }
+  });
+
+  it('does NOT emit tileAssignmentSpec for digit when digitSpec[d].enabled is false', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      digitSpec: {
+        ...DEFAULT_ADV_CFG.digitSpec,
+        '5': { enabled: false, locked: 2, onRack: 1 },
+      },
+    };
+    const cfg = buildGeneratorConfig('cross', 9, adv);
+    // No tileAssignmentSpec at all because no slot is enabled
+    expect(cfg.tileAssignmentSpec).toBeUndefined();
+  });
+
+  it('emits tileAssignmentSpec[d] when digitSpec[d].enabled is true', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      digitSpec: {
+        ...DEFAULT_ADV_CFG.digitSpec,
+        '7': { enabled: true, locked: 1, onRack: 2 },
+      },
+    };
+    const cfg = buildGeneratorConfig('cross', 11, adv);
+    expect(cfg.tileAssignmentSpec['7']).toEqual({ locked: 1, onRack: 2 });
+  });
+
+  it('emits multiple digit entries when several are enabled', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      digitSpec: {
+        ...DEFAULT_ADV_CFG.digitSpec,
+        '0': { enabled: true, locked: 0, onRack: 1 },
+        '3': { enabled: true, locked: 2, onRack: 0 },
+        '9': { enabled: true, locked: 1, onRack: 1 },
+      },
+    };
+    const cfg = buildGeneratorConfig('cross', 12, adv);
+    expect(cfg.tileAssignmentSpec['0']).toEqual({ locked: 0, onRack: 1 });
+    expect(cfg.tileAssignmentSpec['3']).toEqual({ locked: 2, onRack: 0 });
+    expect(cfg.tileAssignmentSpec['9']).toEqual({ locked: 1, onRack: 1 });
+    // Disabled digits don't appear
+    expect(cfg.tileAssignmentSpec['1']).toBeUndefined();
+    expect(cfg.tileAssignmentSpec['5']).toBeUndefined();
+  });
+
+  it('digitSpec composes with heavy/blank/operator placement in one tileAssignmentSpec', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      heavyCount:  { enabled: true, min: 1, max: 1, placementEnabled: true, locked: 1, onRack: 0 },
+      blankCount:  { enabled: true, min: 1, max: 1, placementEnabled: true, locked: 0, onRack: 1 },
+      operatorSpec: {
+        ...DEFAULT_ADV_CFG.operatorSpec,
+        '+': { enabled: true, min: 1, max: 2, placementEnabled: true, locked: 1, onRack: 0 },
+      },
+      digitSpec: {
+        ...DEFAULT_ADV_CFG.digitSpec,
+        '4': { enabled: true, locked: 1, onRack: 0 },
+      },
+    };
+    const cfg = buildGeneratorConfig('cross', 12, adv);
+    expect(cfg.tileAssignmentSpec['__heavy__']).toEqual({ locked: 1, onRack: 0 });
+    expect(cfg.tileAssignmentSpec['?']).toEqual({ locked: 0, onRack: 1 });
+    expect(cfg.tileAssignmentSpec['+']).toEqual({ locked: 1, onRack: 0 });
+    expect(cfg.tileAssignmentSpec['4']).toEqual({ locked: 1, onRack: 0 });
+  });
+
+  it('treats absent digitSpec gracefully (back-compat with older saved configs)', () => {
+    const adv = { ...DEFAULT_ADV_CFG };
+    delete adv.digitSpec;
+    const cfg = buildGeneratorConfig('cross', 9, adv);
+    expect(cfg.tileAssignmentSpec).toBeUndefined();
+  });
+});
+
+describe('digitSpec — applyTileAssignmentToPlacement', () => {
+  it('forces digit "5" to lock=1 when one of two "5" tiles is lock-flagged', () => {
+    // equation 5+5=10 → tiles: ['5','+','5','=','1','0']
+    const tiles = ['5', '+', '5', '=', '1', '0'];
+    const p = makePlacement(tiles.length);
+    const spec = { '5': { locked: 1, onRack: 1 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+
+    const fiveProbs = [out.slotProbs[0], out.slotProbs[2]].sort((a, b) => b - a);
+    expect(fiveProbs[0]).toBe(2);  // one 5 forced lock
+    expect(fiveProbs[1]).toBe(0);  // one 5 forced rack
+  });
+
+  it('forces all instances of digit "0" to rack when locked=0', () => {
+    // equation 5+5=10 → two zero-bearing tiles are '1','0' (last two slots)
+    const tiles = ['5', '+', '5', '=', '1', '0'];
+    const p = makePlacement(tiles.length);
+    const spec = { '0': { locked: 0, onRack: null } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    expect(out.slotProbs[5]).toBe(0);  // the only '0' → rack
+  });
+
+  it('caps locked count to actual digit count in equation', () => {
+    // tiles have ONE '3'; user asks for locked=4 → runtime should clamp to 1
+    const tiles = ['3', '+', '4', '=', '7'];
+    const p = makePlacement(tiles.length);
+    const spec = { '3': { locked: 4, onRack: null } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    expect(out.slotProbs[0]).toBe(2);  // capped to the 1 available
+  });
+
+  it('digit spec coexists with operator + heavy specs', () => {
+    // equation 12+3+5=20 → tiles: ['1','2','+','3','+','5','=','2','0']
+    // ('12' and '20' are heavy two-digit tiles, but here we use them as
+    // separate digit tiles so HEAVY_SET membership doesn't trigger.)
+    const tiles = ['1', '2', '+', '3', '+', '5', '=', '2', '0'];
+    const p = makePlacement(tiles.length);
+    const spec = {
+      '+': { locked: 1, onRack: 1 },   // 2 '+' → 1 lock / 1 rack
+      '2': { locked: 0, onRack: null },// 2 '2' → all rack
+    };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    // Both '2' tiles (indices 1 and 7) on rack
+    expect(out.slotProbs[1]).toBe(0);
+    expect(out.slotProbs[7]).toBe(0);
+    // Plus-tile distribution: one lock, one rack across indices 2 and 4
+    const plusProbs = [out.slotProbs[2], out.slotProbs[4]].sort((a, b) => b - a);
+    expect(plusProbs[0]).toBe(2);
+    expect(plusProbs[1]).toBe(0);
+  });
+});
