@@ -477,6 +477,181 @@ describe('digitSpec — buildGeneratorConfig', () => {
   });
 });
 
+// ─── 5. __normal__ aggregate placement (any 0-9 light digit) ──────────────
+//
+// The "Normal Tile" UX entry point — user picks "lock N + rack M light
+// digits, system randomises which".  Implemented as a synthetic
+// `__normal__` key in tileAssignmentSpec.  Loose semantic: only lock+rack
+// tiles are pinned, the rest stay free.  Per-digit specs take precedence:
+// a digit position already claimed by digitSpec[d] is removed from the
+// __normal__ candidate pool.
+
+describe('normalTileCount — buildGeneratorConfig', () => {
+  it('DEFAULT_ADV_CFG has normalTileCount disabled with zero counts', () => {
+    expect(DEFAULT_ADV_CFG.normalTileCount).toEqual({
+      placementEnabled: false,
+      locked: 0,
+      onRack: 0,
+    });
+  });
+
+  it('emits tileAssignmentSpec.__normal__ when placementEnabled is true', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      normalTileCount: { placementEnabled: true, locked: 2, onRack: 1 },
+    };
+    const cfg = buildGeneratorConfig('cross', 9, adv);
+    expect(cfg.tileAssignmentSpec['__normal__']).toEqual({ locked: 2, onRack: 1 });
+  });
+
+  it('omits __normal__ when placementEnabled is false (even with non-zero counts)', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      normalTileCount: { placementEnabled: false, locked: 2, onRack: 1 },
+    };
+    const cfg = buildGeneratorConfig('cross', 9, adv);
+    expect(cfg.tileAssignmentSpec).toBeUndefined();
+  });
+
+  it('__normal__ composes with per-digit + heavy placement', () => {
+    const adv = {
+      ...DEFAULT_ADV_CFG,
+      heavyCount:  { enabled: true, min: 1, max: 1, placementEnabled: true, locked: 1, onRack: 0 },
+      digitSpec: {
+        ...DEFAULT_ADV_CFG.digitSpec,
+        '7': { enabled: true, locked: 1, onRack: 0 },
+      },
+      normalTileCount: { placementEnabled: true, locked: 1, onRack: 2 },
+    };
+    const cfg = buildGeneratorConfig('cross', 12, adv);
+    expect(cfg.tileAssignmentSpec['__heavy__']).toEqual({ locked: 1, onRack: 0 });
+    expect(cfg.tileAssignmentSpec['7']).toEqual({ locked: 1, onRack: 0 });
+    expect(cfg.tileAssignmentSpec['__normal__']).toEqual({ locked: 1, onRack: 2 });
+  });
+
+  it('back-compat: absent normalTileCount does not emit __normal__', () => {
+    const adv = { ...DEFAULT_ADV_CFG };
+    delete adv.normalTileCount;
+    const cfg = buildGeneratorConfig('cross', 9, adv);
+    expect(cfg.tileAssignmentSpec).toBeUndefined();
+  });
+});
+
+describe('__normal__ — applyTileAssignmentToPlacement', () => {
+  it('pins exactly `locked` light digits to lock and `onRack` to rack; rest unchanged', () => {
+    // equation 1+2+3=15 → tiles: 1 + 2 + 3 = 1 5 (6 light digits, 2 ops, 1 '=')
+    const tiles = ['1', '+', '2', '+', '3', '=', '1', '5'];
+    const p = makePlacement(tiles.length);
+    const origProb = 1 / tiles.length;
+
+    const spec = { '__normal__': { locked: 2, onRack: 1 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+
+    // Light-digit positions: 0,2,4,6,7 → 5 candidates
+    const lightIdx = [0, 2, 4, 6, 7];
+    const probs = lightIdx.map(i => out.slotProbs[i]);
+    const lockN = probs.filter(v => v === 2).length;
+    const rackN = probs.filter(v => v === 0).length;
+    const freeN = probs.filter(v => v !== 0 && v !== 2).length;
+    expect(lockN).toBe(2);
+    expect(rackN).toBe(1);
+    expect(freeN).toBe(2);    // 5 candidates - 2 lock - 1 rack = 2 untouched
+
+    // Untouched ones keep original prob (1/8 for 8-tile equation)
+    probs.filter(v => v !== 0 && v !== 2).forEach(v => {
+      expect(v).toBeCloseTo(origProb);
+    });
+    // Operator and '=' positions unchanged
+    expect(out.slotProbs[1]).toBeCloseTo(origProb);
+    expect(out.slotProbs[3]).toBeCloseTo(origProb);
+    expect(out.slotProbs[5]).toBeCloseTo(origProb);
+  });
+
+  it('does NOT pin heavy tiles even though they contain digits', () => {
+    // tiles: ['10', '+', '5', '=', '15'] — '10' and '15' are heavy two-digit
+    const tiles = ['10', '+', '5', '=', '15'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 5, onRack: 0 } };  // very greedy
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    // Only index 2 (the literal '5') is a light digit; heavy '10'/'15' excluded
+    expect(out.slotProbs[2]).toBe(2);
+    expect(out.slotProbs[0]).not.toBe(2);   // '10' (heavy) NOT pinned
+    expect(out.slotProbs[4]).not.toBe(2);   // '15' (heavy) NOT pinned
+  });
+
+  it('clamps locked + onRack to candidate count (over-spec degrades gracefully)', () => {
+    const tiles = ['1', '+', '2', '=', '3'];  // 3 light digits
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 10, onRack: 10 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    // lockN clamps to 3, rackN clamps to 0 (lockN ate all)
+    const lockCount = [out.slotProbs[0], out.slotProbs[2], out.slotProbs[4]].filter(v => v === 2).length;
+    expect(lockCount).toBe(3);
+  });
+
+  it('per-digit spec takes priority over __normal__ on overlapping positions', () => {
+    // 4 light digits.  per-digit pins '5' lock=1, __normal__ wants lock=3 rack=0.
+    // Expected: the single '5' goes to lock (per-digit), then __normal__ picks
+    // 3 of the remaining 3 light digits → lock. So 4 locks total.
+    const tiles = ['1', '5', '+', '2', '=', '3'];
+    const p = makePlacement(tiles.length);
+    const spec = {
+      '5':         { locked: 1, onRack: 0 },          // pin the one '5' to lock
+      '__normal__': { locked: 3, onRack: 0 },         // lock 3 more normals
+    };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    // Light positions: 0,1,3,5 → 4 total.  3 of 4 get locked via __normal__,
+    // plus the '5' at index 1 via per-digit → all 4 light positions locked.
+    expect(out.slotProbs[0]).toBe(2);
+    expect(out.slotProbs[1]).toBe(2);  // '5' via per-digit
+    expect(out.slotProbs[3]).toBe(2);
+    expect(out.slotProbs[5]).toBe(2);
+  });
+
+  it('zero locked + zero onRack: no-op (everything stays free)', () => {
+    const tiles = ['1', '+', '2', '=', '3'];
+    const p = makePlacement(tiles.length);
+    const origSlotProbs = [...p.slotProbs];
+    const spec = { '__normal__': { locked: 0, onRack: 0 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    out.slotProbs.forEach((v, i) => {
+      expect(v).toBeCloseTo(origSlotProbs[i]);
+    });
+  });
+
+  it('digit "0" is treated as a light digit (not excluded)', () => {
+    // equation 5+5=10 → tiles: ['5','+','5','=','1','0']
+    // Note: the standalone '0' character is a light digit; only '10','11',etc are heavy.
+    const tiles = ['5', '+', '5', '=', '1', '0'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 4, onRack: 0 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    // 4 light digits (indices 0, 2, 4, 5) — all should lock
+    expect(out.slotProbs[0]).toBe(2);
+    expect(out.slotProbs[2]).toBe(2);
+    expect(out.slotProbs[4]).toBe(2);
+    expect(out.slotProbs[5]).toBe(2);
+  });
+
+  it('only onRack specified: pins onRack light digits to rack, rest free', () => {
+    const tiles = ['1', '+', '2', '+', '3', '=', '6'];
+    const p = makePlacement(tiles.length);
+    const origProb = 1 / tiles.length;
+    const spec = { '__normal__': { locked: 0, onRack: 2 } };
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+
+    const lightIdx = [0, 2, 4, 6];
+    const probs = lightIdx.map(i => out.slotProbs[i]);
+    expect(probs.filter(v => v === 0).length).toBe(2);  // 2 forced rack
+    expect(probs.filter(v => v === 2).length).toBe(0);  // 0 locked
+    // The remaining 2 light digits should be untouched
+    expect(probs.filter(v => v !== 0 && v !== 2).length).toBe(2);
+    probs.filter(v => v !== 0 && v !== 2).forEach(v => {
+      expect(v).toBeCloseTo(origProb);
+    });
+  });
+});
+
 describe('digitSpec — applyTileAssignmentToPlacement', () => {
   it('forces digit "5" to lock=1 when one of two "5" tiles is lock-flagged', () => {
     // equation 5+5=10 → tiles: ['5','+','5','=','1','0']

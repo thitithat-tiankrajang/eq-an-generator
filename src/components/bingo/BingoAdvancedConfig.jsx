@@ -28,6 +28,13 @@ export const DEFAULT_ADV_CFG = {
   digitSpec: Object.fromEntries(
     DIGIT_SYMBOLS.map(d => [d, { enabled: false, locked: 0, onRack: 0 }])
   ),
+  // Aggregate "normal tile" (any light digit 0-9) placement (cross mode only).
+  // Use this when the user wants "X locked + Y on rack of any digit, system
+  // picks which ones" — the much more common case than per-digit.
+  // The runtime (applyTileAssignmentToPlacement, __normal__ category) uses
+  // a loose semantic: only locked + onRack tiles are pinned, the rest of the
+  // light digits stay free for the placement algo to position naturally.
+  normalTileCount: { placementEnabled: false, locked: 0, onRack: 0 },
 };
 
 // ── Build config object for generateBingo ────────────────────────────────────
@@ -80,6 +87,17 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
     }
   }
 
+  // Aggregate "normal tile" placement.  Backed by the `__normal__` category
+  // in applyTileAssignmentToPlacement which matches every light digit tile
+  // (0-9, non-heavy) AFTER more specific per-digit/per-op specs claimed
+  // their slots.  Loose semantic: only locked + onRack copies are pinned.
+  if (adv.normalTileCount?.placementEnabled) {
+    tileAssignmentSpec['__normal__'] = {
+      locked: adv.normalTileCount.locked ?? 0,
+      onRack: adv.normalTileCount.onRack ?? 0,
+    };
+  }
+
   if (Object.keys(tileAssignmentSpec).length > 0) cfg.tileAssignmentSpec = tileAssignmentSpec;
 
   return cfg;
@@ -101,6 +119,7 @@ function countActive(adv) {
     adv.heavyCount.placementEnabled,
     adv.blankCount?.placementEnabled,
     adv.equalCount.placementEnabled,
+    adv.normalTileCount?.placementEnabled,
     ...OP_SYMBOLS.map(op => adv.operatorSpec[op].placementEnabled),
   ].filter(Boolean).length;
   const digitsActive = adv.digitSpec
@@ -439,7 +458,13 @@ function DigitPlacementCard({ digit, spec, upd, poolCap = DIGIT_POOL_CAP }) {
 
 // ── OperatorCard ──────────────────────────────────────────────────────────────
 function OperatorCard({ op, spec, upd, isCross, maxForOp }) {
-  const budget = spec.min;
+  // Budget = spec.max so the lock/rack steppers can scale up to the highest
+  // possible count of this operator (not the guaranteed-minimum count).  The
+  // runtime in applyTileAssignmentToPlacement clamps lock + rack down to the
+  // operator's actual count in the realised equation, so an over-spec
+  // degrades gracefully.  Using spec.min here was the original bug:
+  // operatorSpec defaults to min=0, which made lock/rack steppers stuck at 0.
+  const budget = Math.max(spec.max ?? 0, spec.min ?? 0);
 
   return (
     <div
@@ -652,7 +677,7 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
             onRack={advancedCfg.heavyCount.onRack}
             onLockedChange={v => upd('heavyCount.locked', v)}
             onRackChange={v => upd('heavyCount.onRack', v)}
-            budget={advancedCfg.heavyCount.min}
+            budget={Math.max(advancedCfg.heavyCount.max ?? 0, advancedCfg.heavyCount.min ?? 0)}
           />
         )}
       </section>
@@ -680,7 +705,7 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
             onRack={advancedCfg.blankCount?.onRack ?? 0}
             onLockedChange={v => upd('blankCount.locked', v)}
             onRackChange={v => upd('blankCount.onRack', v)}
-            budget={advancedCfg.blankCount?.min ?? 0}
+            budget={Math.max(advancedCfg.blankCount?.max ?? 0, advancedCfg.blankCount?.min ?? 0)}
           />
         )}
         <div className="mt-1.5 px-1 text-[10px] text-stone-400">
@@ -711,7 +736,7 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
             onRack={advancedCfg.equalCount.onRack}
             onLockedChange={v => upd('equalCount.locked', v)}
             onRackChange={v => upd('equalCount.onRack', v)}
-            budget={advancedCfg.equalCount.min}
+            budget={Math.max(advancedCfg.equalCount.max ?? 0, advancedCfg.equalCount.min ?? 0)}
           />
         )}
         <div className="mt-1.5 px-1 text-[10px] text-stone-400">
@@ -719,17 +744,55 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
         </div>
       </section>
 
-      {/* ── E: Digits (0–9) placement ── */}
+      {/* ── E: Normal-tile (any 0-9) placement ── */}
+      {/*
+       * Aggregate placement over light digits — the "I want N tiles locked
+       * on board, M on rack, system picks which digits" entry point.  This
+       * is the default UX for digit placement; the per-digit grid (F) is
+       * the power-user override and stays collapsed by default.
+       *
+       * Budget: we use `totalTile - 1` as a loose upper cap (subtract '=').
+       * applyTileAssignmentToPlacement#__normal__ clamps further at runtime
+       * based on the actual count of light digits in the realised equation.
+       */}
       <section>
         <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">
-          E — Digits <span className="text-stone-400 font-normal">(0–9)</span>
+          E — Normal Tile <span className="text-stone-400 font-normal">(any digit 0–9)</span>
         </div>
 
-        {/* Plain mode has no board, so placement is meaningless there. */}
         {!isCross ? (
           <div className="px-3 py-2 rounded-lg bg-stone-50 border border-stone-200 text-[10px] text-stone-400">
-            Digit placement is available in <span className="font-semibold text-stone-500">cross</span> mode only
+            Tile placement is available in <span className="font-semibold text-stone-500">cross</span> mode only
             (plain mode delivers every tile to the rack).
+          </div>
+        ) : (
+          <>
+            <div className="text-[10px] text-stone-400 px-1 mb-1.5">
+              Pin how many light digits land on the <span className="font-semibold text-stone-500">board</span> (lock)
+              vs the <span className="font-semibold text-stone-500">rack</span>. The system randomly picks which digits — pick any combination.
+            </div>
+            <PlacementRow
+              placementEnabled={advancedCfg.normalTileCount?.placementEnabled ?? false}
+              onToggle={() => upd('normalTileCount.placementEnabled', !(advancedCfg.normalTileCount?.placementEnabled))}
+              locked={advancedCfg.normalTileCount?.locked ?? 0}
+              onRack={advancedCfg.normalTileCount?.onRack ?? 0}
+              onLockedChange={v => upd('normalTileCount.locked', v)}
+              onRackChange={v => upd('normalTileCount.onRack', v)}
+              budget={Math.max(0, totalTile - 1)}
+            />
+          </>
+        )}
+      </section>
+
+      {/* ── F: Per-digit overrides (power-user) ── */}
+      <section>
+        <div className="text-[10px] font-bold text-stone-600 uppercase mb-2">
+          F — Per-digit Override <span className="text-stone-400 font-normal">(advanced)</span>
+        </div>
+
+        {!isCross ? (
+          <div className="px-3 py-2 rounded-lg bg-stone-50 border border-stone-200 text-[10px] text-stone-400">
+            Per-digit placement is available in <span className="font-semibold text-stone-500">cross</span> mode only.
           </div>
         ) : (
           <>
@@ -739,8 +802,8 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
               className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl border-2 border-dashed border-stone-300 hover:border-sky-400 hover:bg-sky-50 transition-colors cursor-pointer min-h-[44px]"
             >
               <span className="text-xs font-medium text-stone-600">
-                Per-digit placement
-                <span className="text-stone-400 ml-1 text-[9px]">lock / rack</span>
+                Pin a specific digit
+                <span className="text-stone-400 ml-1 text-[9px]">e.g. always lock 1 of digit "5"</span>
               </span>
               <div className="flex items-center gap-1.5">
                 {anyDigitActive && (
@@ -755,8 +818,8 @@ function AdvancedConfigBody({ advancedCfg, setAdvancedCfg, mode, totalTile = 9 }
             {digitExpand && (
               <div className="mt-1.5 space-y-1.5">
                 <div className="text-[10px] text-stone-400 px-1 mb-1">
-                  Pick how many copies of each digit must land on the <span className="font-semibold text-stone-500">board</span> (lock)
-                  vs the <span className="font-semibold text-stone-500">rack</span>. The runtime clamps to the digit's actual count in the equation.
+                  Overrides take priority over <span className="font-semibold text-stone-500">E — Normal Tile</span> for the digits you pin here.
+                  Leftover light digits still follow E's count.
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                   {DIGIT_SYMBOLS.map(d => (
