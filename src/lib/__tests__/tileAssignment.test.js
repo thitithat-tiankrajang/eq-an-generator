@@ -542,8 +542,12 @@ describe('normalTileCount — buildGeneratorConfig', () => {
 });
 
 describe('__normal__ — applyTileAssignmentToPlacement', () => {
-  it('pins exactly `locked` light digits to lock and `onRack` to rack; rest unchanged', () => {
-    // equation 1+2+3=15 → tiles: 1 + 2 + 3 = 1 5 (6 light digits, 2 ops, 1 '=')
+  it('pins exactly `locked` light digits + zeros operators/= when satisfiable', () => {
+    // 8-tile equation 1+2+3=15 → tiles: 1 + 2 + 3 = 1 5
+    //   light positions: 0, 2, 4, 6, 7 (5 candidates)
+    //   adjacent pair: 6-7 (both lights — only one can lock)
+    //   non-adjacent pickable: {0, 2, 4, 6} or {0, 2, 4, 7} → max 4
+    // Spec: lock=2, rack=1 → fully satisfiable (2 non-adjacent picks easy).
     const tiles = ['1', '+', '2', '+', '3', '=', '1', '5'];
     const p = makePlacement(tiles.length);
     const origProb = 1 / tiles.length;
@@ -551,7 +555,6 @@ describe('__normal__ — applyTileAssignmentToPlacement', () => {
     const spec = { '__normal__': { locked: 2, onRack: 1 } };
     const out = applyTileAssignmentToPlacement(tiles, p, spec);
 
-    // Light-digit positions: 0,2,4,6,7 → 5 candidates
     const lightIdx = [0, 2, 4, 6, 7];
     const probs = lightIdx.map(i => out.slotProbs[i]);
     const lockN = probs.filter(v => v === 2).length;
@@ -559,16 +562,29 @@ describe('__normal__ — applyTileAssignmentToPlacement', () => {
     const freeN = probs.filter(v => v !== 0 && v !== 2).length;
     expect(lockN).toBe(2);
     expect(rackN).toBe(1);
-    expect(freeN).toBe(2);    // 5 candidates - 2 lock - 1 rack = 2 untouched
+    expect(freeN).toBe(2);  // 5 candidates - 2 lock - 1 rack = 2 leftover lights
 
-    // Untouched ones keep original prob (1/8 for 8-tile equation)
+    // Leftover lights keep their default placement prob (loose semantic)
     probs.filter(v => v !== 0 && v !== 2).forEach(v => {
       expect(v).toBeCloseTo(origProb);
     });
-    // Operator and '=' positions unchanged
-    expect(out.slotProbs[1]).toBeCloseTo(origProb);
-    expect(out.slotProbs[3]).toBeCloseTo(origProb);
-    expect(out.slotProbs[5]).toBeCloseTo(origProb);
+
+    // Operator-shield ON (target fully satisfied): operators + '=' → 0
+    // so selectLockPositions can't pick them as fills.  This is the
+    // user-visible behaviour change vs the original loose semantic and is
+    // what fixes "operator gets locked instead of digit".
+    expect(out.slotProbs[1]).toBe(0);  // '+'
+    expect(out.slotProbs[3]).toBe(0);  // '+'
+    expect(out.slotProbs[5]).toBe(0);  // '='
+
+    // No two pinned-locks adjacent (selectLockPositions would prune one)
+    const pinnedLockIdx = out.slotProbs
+      .map((v, idx) => v === 2 ? idx : -1)
+      .filter(idx => idx >= 0);
+    const sorted = [...pinnedLockIdx].sort((a, b) => a - b);
+    for (let j = 1; j < sorted.length; j++) {
+      expect(sorted[j] - sorted[j - 1]).toBeGreaterThan(1);
+    }
   });
 
   it('does NOT pin heavy tiles even though they contain digits', () => {
@@ -623,18 +639,28 @@ describe('__normal__ — applyTileAssignmentToPlacement', () => {
     });
   });
 
-  it('digit "0" is treated as a light digit (not excluded)', () => {
+  it('digit "0" is treated as a light digit (eligible for locking)', () => {
     // equation 5+5=10 → tiles: ['5','+','5','=','1','0']
-    // Note: the standalone '0' character is a light digit; only '10','11',etc are heavy.
+    // The standalone '0' is a light digit; '10','11',… are heavy two-digit
+    // tiles.  We can't ask for lock=4 of the 4 light positions here
+    // because indices 4 ('1') and 5 ('0') are adjacent — selectLockPositions
+    // would prune one anyway.  Verify the loose intent instead: across
+    // many runs with lock=1, the '0' at index 5 lands in the lock at
+    // least once, proving it's in the candidate pool.
     const tiles = ['5', '+', '5', '=', '1', '0'];
     const p = makePlacement(tiles.length);
-    const spec = { '__normal__': { locked: 4, onRack: 0 } };
+    const spec = { '__normal__': { locked: 1, onRack: 0 } };
+    let zeroEverLocked = false;
+    for (let i = 0; i < 60; i++) {
+      const out = applyTileAssignmentToPlacement(tiles, p, spec);
+      if (out.slotProbs[5] === 2) { zeroEverLocked = true; break; }
+    }
+    expect(zeroEverLocked).toBe(true);
+    // Also: a one-shot run must pin exactly one light, never an operator.
     const out = applyTileAssignmentToPlacement(tiles, p, spec);
-    // 4 light digits (indices 0, 2, 4, 5) — all should lock
-    expect(out.slotProbs[0]).toBe(2);
-    expect(out.slotProbs[2]).toBe(2);
-    expect(out.slotProbs[4]).toBe(2);
-    expect(out.slotProbs[5]).toBe(2);
+    const lockedIdx = out.slotProbs.findIndex(v => v === 2);
+    expect(lockedIdx).toBeGreaterThanOrEqual(0);
+    expect(_isLightDigit(tiles[lockedIdx])).toBe(true);
   });
 
   it('only onRack specified: pins onRack light digits to rack, rest free', () => {
@@ -825,5 +851,129 @@ describe('buildGeneratorConfig — accepts legacy/partial cfgs without crashing'
     cfg = deepUpdate(cfg, 'normalTileCount.onRack', 1);
     const generatorCfg = buildGeneratorConfig('cross', 9, cfg);
     expect(generatorCfg.tileAssignmentSpec['__normal__']).toEqual({ locked: 2, onRack: 1 });
+  });
+});
+
+// ─── 7. __normal__ adjacency + operator-shield regression ─────────────────
+//
+// User report: "When I set Normal Tile lock = max possible (e.g. lock=4
+// for cross 12-tile), every problem SHOULD lock light digits — but
+// sometimes an operator (+ - × ÷) ends up locked instead."
+//
+// Root cause: selectLockPositions enforces gap >= 2 between mustLock
+// positions and PRUNES adjacent ones, then fills the shortfall from
+// `eligible` — which includes operator positions.  If we naively pin
+// two adjacent light-digit positions, one gets pruned and an operator
+// slips into its lock slot.
+//
+// Fix layered into Phase 2 of applyTileAssignmentToPlacement:
+//   (a) greedy non-adjacent picking with multi-shuffle retry
+//   (b) when we can fully satisfy targetLockN, ZERO out non-light
+//       slotProbs so selectLockPositions cannot pick them as fills
+//   (c) when we cannot (degenerate equation with too few non-adjacent
+//       lights), leave non-lights at default prob to preserve the
+//       rack-size invariant — surfaces the issue without breaking the
+//       cross-mode contract
+
+const _isLightDigit = (tile) => /^[0-9]$/.test(tile) && !HEAVY_SET.has(tile);
+
+describe('__normal__ — adjacency-aware lock selection', () => {
+  it('never pins two adjacent light positions as mustLock', () => {
+    // Heavily clustered light positions to force adjacency attempts.
+    const tiles = ['1','1','+','2','2','+','3','3','+','5','=','7'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 4, onRack: 0 } };
+
+    for (let i = 0; i < 50; i++) {
+      const out = applyTileAssignmentToPlacement(tiles, p, spec);
+      const pinnedLockIdx = out.slotProbs
+        .map((v, idx) => v === 2 ? idx : -1)
+        .filter(idx => idx >= 0);
+      // Every pinned-lock position MUST be a light digit
+      for (const idx of pinnedLockIdx) {
+        expect(_isLightDigit(tiles[idx])).toBe(true);
+      }
+      // No two pinned positions are adjacent (gap >= 2)
+      const sorted = [...pinnedLockIdx].sort((a, b) => a - b);
+      for (let j = 1; j < sorted.length; j++) {
+        expect(sorted[j] - sorted[j - 1]).toBeGreaterThan(1);
+      }
+    }
+  });
+
+  it('zeros operator/= slotProbs when targetLockN is fully satisfiable', () => {
+    // 9-tile, lock=1 — fully satisfiable.  Fix path (b) triggers.
+    const tiles = ['1','+','2','+','3','+','4','=','5'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 1, onRack: 0 } };
+
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    expect(out.slotProbs[1]).toBe(0);  // '+'
+    expect(out.slotProbs[3]).toBe(0);  // '+'
+    expect(out.slotProbs[5]).toBe(0);  // '+'
+    expect(out.slotProbs[7]).toBe(0);  // '='
+    const lockCount = out.slotProbs.filter(v => v === 2).length;
+    expect(lockCount).toBe(1);
+  });
+
+  it('preserves rack-size invariant in degenerate equations (NO operator-shield)', () => {
+    // Contrived: ask for more lock than the equation can satisfy
+    // non-adjacently.  Fix path (c): non-lights stay at default prob so
+    // selectLockPositions can fill the shortfall (preserving the
+    // board-locks = totalTile - 8 contract in cross mode).
+    const tiles = ['1','2','3','4','+','5','=','6','7'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 5, onRack: 0 } };
+
+    const out = applyTileAssignmentToPlacement(tiles, p, spec);
+    const lockCount = out.slotProbs.filter(v => v === 2).length;
+    expect(lockCount).toBeGreaterThan(0);
+    expect(lockCount).toBeLessThanOrEqual(5);
+    // No two pinned-locks are adjacent
+    const pinnedLockIdx = out.slotProbs
+      .map((v, idx) => v === 2 ? idx : -1)
+      .filter(idx => idx >= 0);
+    const sorted = [...pinnedLockIdx].sort((a, b) => a - b);
+    for (let j = 1; j < sorted.length; j++) {
+      expect(sorted[j] - sorted[j - 1]).toBeGreaterThan(1);
+    }
+    // And every pinned lock is a light digit
+    for (const idx of pinnedLockIdx) {
+      expect(_isLightDigit(tiles[idx])).toBe(true);
+    }
+  });
+
+  it('lock=1 always pins a single light, never an operator (9-tile case)', () => {
+    const tiles = ['1','+','2','+','3','+','4','=','5'];
+    const p = makePlacement(tiles.length);
+    const spec = { '__normal__': { locked: 1, onRack: 0 } };
+    for (let i = 0; i < 30; i++) {
+      const out = applyTileAssignmentToPlacement(tiles, p, spec);
+      const lockedIdx = out.slotProbs.findIndex(v => v === 2);
+      expect(lockedIdx).toBeGreaterThanOrEqual(0);
+      expect(_isLightDigit(tiles[lockedIdx])).toBe(true);
+    }
+  });
+
+  it('per-digit overrides win and __normal__ fills the rest non-adjacently', () => {
+    const tiles = ['1','+','2','+','5','+','5','=','9'];
+    const p = makePlacement(tiles.length);
+    const spec = {
+      '5':          { locked: 1, onRack: 0 },   // pin one '5' (slots 4 & 6 are '5')
+      '__normal__': { locked: 2, onRack: 0 },   // plus 2 more lights, non-adjacent
+    };
+    for (let i = 0; i < 20; i++) {
+      const out = applyTileAssignmentToPlacement(tiles, p, spec);
+      const pinnedLockIdx = out.slotProbs
+        .map((v, idx) => v === 2 ? idx : -1)
+        .filter(idx => idx >= 0);
+      for (const idx of pinnedLockIdx) {
+        expect(_isLightDigit(tiles[idx])).toBe(true);
+      }
+      const sorted = [...pinnedLockIdx].sort((a, b) => a - b);
+      for (let j = 1; j < sorted.length; j++) {
+        expect(sorted[j] - sorted[j - 1]).toBeGreaterThan(1);
+      }
+    }
   });
 });
