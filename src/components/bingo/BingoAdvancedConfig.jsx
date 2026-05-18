@@ -38,26 +38,31 @@ export const DEFAULT_ADV_CFG = {
 };
 
 // ── Build config object for generateBingo ────────────────────────────────────
+//
+// Defensive against legacy cfgs: every nested field is read with optional
+// chaining so a cfg loaded from localStorage before a schema field
+// existed doesn't crash here.  Pair with `deepUpdate`'s missing-
+// intermediate auto-creation to make every advanced-config write safe.
 export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
   const cfg = { mode, totalTile };
   if (poolDef) cfg.poolDef = poolDef;
 
   if ((adv.algorithm ?? 'pattern') === 'backtrack') cfg.algorithm = 'backtrack';
 
-  if (adv.operatorCount.enabled)
+  if (adv.operatorCount?.enabled)
     cfg.operatorCount = [adv.operatorCount.min, adv.operatorCount.max];
-  if (adv.heavyCount.enabled)
+  if (adv.heavyCount?.enabled)
     cfg.heavyCount = [adv.heavyCount.min, adv.heavyCount.max];
   if (adv.blankCount?.enabled)
     cfg.blankCount = [adv.blankCount.min, adv.blankCount.max];
-  if (adv.equalCount.enabled)
+  if (adv.equalCount?.enabled)
     cfg.equalCount = [adv.equalCount.min, adv.equalCount.max];
 
   const opSpec = {};
   const tileAssignmentSpec = {};
 
-  for (const [op, v] of Object.entries(adv.operatorSpec)) {
-    if (v.enabled) {
+  for (const [op, v] of Object.entries(adv.operatorSpec ?? {})) {
+    if (v?.enabled) {
       opSpec[op] = [v.min, v.max];
       if (v.placementEnabled) {
         tileAssignmentSpec[op] = { locked: v.locked, onRack: v.onRack };
@@ -66,13 +71,13 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
   }
   if (Object.keys(opSpec).length > 0) cfg.operatorSpec = opSpec;
 
-  if (adv.heavyCount.enabled && adv.heavyCount.placementEnabled) {
+  if (adv.heavyCount?.enabled && adv.heavyCount.placementEnabled) {
     tileAssignmentSpec['__heavy__'] = { locked: adv.heavyCount.locked, onRack: adv.heavyCount.onRack };
   }
   if (adv.blankCount?.enabled && adv.blankCount.placementEnabled) {
     tileAssignmentSpec['?'] = { locked: adv.blankCount.locked, onRack: adv.blankCount.onRack };
   }
-  if (adv.equalCount.enabled && adv.equalCount.placementEnabled) {
+  if (adv.equalCount?.enabled && adv.equalCount.placementEnabled) {
     tileAssignmentSpec['='] = { locked: adv.equalCount.locked, onRack: adv.equalCount.onRack };
   }
 
@@ -104,33 +109,68 @@ export function buildGeneratorConfig(mode, totalTile, adv, poolDef = null) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+//
+// deepUpdate
+// ----------
+// Immutable set-at-path helper used by every advanced-config toggle and
+// stepper.  The original implementation assumed every intermediate node
+// in `path` already existed on `obj` — which broke whenever a cfg loaded
+// from localStorage (or any cached state) was older than the current
+// `DEFAULT_ADV_CFG` schema:
+//
+//   upd('normalTileCount.placementEnabled', true)
+//   → keys = ['normalTileCount', 'placementEnabled']
+//   → cur = cur['normalTileCount']            // undefined for legacy cfg
+//   → cur['placementEnabled'] = true          // ❌ TypeError
+//        "Cannot set properties of undefined (setting 'placementEnabled')"
+//
+// Fix: auto-create missing intermediates as empty objects.  This makes
+// the helper forward-compatible with every future nested field addition
+// to `DEFAULT_ADV_CFG` without needing a separate migration pass on the
+// loaded cfg.  An identical guard handles values that exist but are
+// non-objects (e.g. accidentally serialized as a string) — replacing
+// them with `{}` is safer than silently failing the deeper write.
 function deepUpdate(obj, path, value) {
   const next = structuredClone(obj);
   const keys = path.split('.');
   let cur = next;
-  for (let i = 0; i < keys.length - 1; i++) cur = cur[keys[i]];
+  for (let i = 0; i < keys.length - 1; i++) {
+    const k = keys[i];
+    if (cur[k] == null || typeof cur[k] !== 'object') {
+      cur[k] = {};
+    }
+    cur = cur[k];
+  }
   cur[keys[keys.length - 1]] = value;
   return next;
 }
 
+// Exported for the unit-test suite — not part of the public API surface.
+// Tests assert deepUpdate's forward-compat behaviour on legacy cfg shapes.
+export { deepUpdate as __test_deepUpdate };
+
+// countActive — read-side counterpart to deepUpdate.  Same legacy-cfg risk:
+// reading `adv.heavyCount.placementEnabled` on a cfg missing `heavyCount`
+// throws `Cannot read properties of undefined`.  Use optional chaining
+// everywhere so old saved states render rather than crash.
 function countActive(adv) {
   const algorithmActive = (adv.algorithm ?? 'pattern') !== 'pattern' ? 1 : 0;
   const placements = [
-    adv.heavyCount.placementEnabled,
+    adv.heavyCount?.placementEnabled,
     adv.blankCount?.placementEnabled,
-    adv.equalCount.placementEnabled,
+    adv.equalCount?.placementEnabled,
     adv.normalTileCount?.placementEnabled,
-    ...OP_SYMBOLS.map(op => adv.operatorSpec[op].placementEnabled),
+    ...OP_SYMBOLS.map(op => adv.operatorSpec?.[op]?.placementEnabled),
   ].filter(Boolean).length;
   const digitsActive = adv.digitSpec
     ? DIGIT_SYMBOLS.filter(d => adv.digitSpec[d]?.enabled).length
     : 0;
   return [
-    adv.operatorCount.enabled,
-    adv.heavyCount.enabled,
+    adv.operatorCount?.enabled,
+    adv.heavyCount?.enabled,
     adv.blankCount?.enabled,
-    adv.equalCount.enabled,
-    ...OP_SYMBOLS.map(op => adv.operatorSpec[op].enabled),
+    adv.equalCount?.enabled,
+    ...OP_SYMBOLS.map(op => adv.operatorSpec?.[op]?.enabled),
   ].filter(Boolean).length + placements + algorithmActive + digitsActive;
 }
 
