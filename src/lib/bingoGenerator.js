@@ -80,10 +80,21 @@ export const TILE_POINTS = {
 // SECTION 2 — TILE ASSIGNMENT
 // =================================================================
 
+// Light-digit predicate for the `__normal__` placement category.  This is
+// "any single-digit tile 0-9 that is not a heavy two-digit tile" — i.e.
+// the standard A-Math light number set including '0'.  We deliberately
+// build the test from a regex rather than reusing tileHelpers.LIGHT_DIGS
+// because that constant excludes '0' (atoms can't lead with zero).
+const _NORMAL_TILE_RE = /^[0-9]$/;
+function _isLightDigitTile(tile) {
+  return _NORMAL_TILE_RE.test(tile) && !HEAVY_SET.has(tile);
+}
+
 export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAssignmentSpec) {
   if (!tileAssignmentSpec || Object.keys(tileAssignmentSpec).length === 0) return placement;
 
   const catOf = (tile) => HEAVY_SET.has(tile) ? '__heavy__' : tile;
+  const safeInt = (v) => (Number.isFinite(v) ? Math.round(v) : null);
 
   const byType = {};
   solutionTiles.forEach((tile, i) => {
@@ -94,13 +105,20 @@ export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAss
 
   const slotProbs = [...(placement.slotProbs ?? Array(solutionTiles.length).fill(1 / solutionTiles.length))];
 
+  // Phase 1 — per-type specs (per-digit, per-operator, __heavy__, '?', '=').
+  // These are explicit: every tile of the type gets pinned (lock or rack).
+  // `__normal__` is deferred to phase 2 because it operates on the category
+  // "any light digit" and must not steal slots already claimed by a more
+  // specific per-digit spec.
+  const pinned = new Set();
   for (const [typeKey, spec] of Object.entries(tileAssignmentSpec)) {
+    if (typeKey === '__normal__') continue;
+
     const indices = shuffle([...(byType[typeKey] || [])]);
     if (!indices.length) continue;
 
     const total = indices.length;
     let lockedN = null;
-    const safeInt = (v) => (Number.isFinite(v) ? Math.round(v) : null);
     const lockedVal = safeInt(spec.locked);
     const onRackVal = safeInt(spec.onRack);
 
@@ -113,9 +131,42 @@ export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAss
     }
 
     if (lockedN !== null) {
-      indices.slice(0, lockedN).forEach(i => { slotProbs[i] = 2; });
-      indices.slice(lockedN).forEach(i => { slotProbs[i] = 0; });
+      indices.slice(0, lockedN).forEach(i => { slotProbs[i] = 2; pinned.add(i); });
+      indices.slice(lockedN).forEach(i => { slotProbs[i] = 0; pinned.add(i); });
     }
+  }
+
+  // Phase 2 — `__normal__`: aggregate placement over light-digit tiles.
+  //
+  // Unlike per-type specs, this uses a LOOSE semantic — only `lock + onRack`
+  // tiles get pinned; the rest stay at their original slotProbs so the
+  // downstream placement algo can place them wherever fits best.  This
+  // matches the user-facing UX: "lock N normal tiles, rack M normal tiles,
+  // we don't care which digits or where the leftover goes."
+  //
+  // Per-digit specs (already processed) take precedence — pinned indices
+  // are filtered out before counting normal candidates.
+  const normalSpec = tileAssignmentSpec['__normal__'];
+  if (normalSpec) {
+    const candidateIndices = shuffle(
+      solutionTiles
+        .map((t, i) => (_isLightDigitTile(t) && !pinned.has(i)) ? i : -1)
+        .filter(i => i >= 0)
+    );
+    const total = candidateIndices.length;
+    const requestedLock = safeInt(normalSpec.locked);
+    const requestedRack = safeInt(normalSpec.onRack);
+
+    const lockN = requestedLock != null
+      ? Math.max(0, Math.min(requestedLock, total))
+      : 0;
+    const rackN = requestedRack != null
+      ? Math.max(0, Math.min(requestedRack, total - lockN))
+      : 0;
+
+    candidateIndices.slice(0, lockN).forEach(i => { slotProbs[i] = 2; });
+    candidateIndices.slice(lockN, lockN + rackN).forEach(i => { slotProbs[i] = 0; });
+    // Remaining indices (lockN + rackN .. total) — slotProbs unchanged.
   }
 
   return { ...placement, slotProbs };
