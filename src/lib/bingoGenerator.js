@@ -146,27 +146,87 @@ export function applyTileAssignmentToPlacement(solutionTiles, placement, tileAss
   //
   // Per-digit specs (already processed) take precedence — pinned indices
   // are filtered out before counting normal candidates.
+  //
+  // Adjacency-aware selection
+  // -------------------------
+  // selectLockPositions (crossBingoPlacement.js) enforces gap >= 2 between
+  // `mustLock` positions (those with slotProbs >= 1) and PRUNES the
+  // adjacent ones, then fills the shortfall from `eligible` — which
+  // includes operators, '=', and heavies.  If we naively pin two adjacent
+  // light digits as mustLock, one gets pruned and an operator slips into
+  // its lock slot — exactly the bug users reported as
+  //   "I asked for max normal-tile locks but an operator got locked".
+  //
+  // Fix: pre-filter our lock picks to non-adjacent positions (gap >= 2)
+  // before handing them to selectLockPositions.  Multi-shuffle retry
+  // approximates the maximum independent set on the light-digit index
+  // subset; for typical equations 4-6 attempts are plenty.
   const normalSpec = tileAssignmentSpec['__normal__'];
   if (normalSpec) {
-    const candidateIndices = shuffle(
-      solutionTiles
-        .map((t, i) => (_isLightDigitTile(t) && !pinned.has(i)) ? i : -1)
-        .filter(i => i >= 0)
-    );
-    const total = candidateIndices.length;
+    const allLightIndices = solutionTiles
+      .map((t, i) => (_isLightDigitTile(t) && !pinned.has(i)) ? i : -1)
+      .filter(i => i >= 0);
     const requestedLock = safeInt(normalSpec.locked);
     const requestedRack = safeInt(normalSpec.onRack);
 
-    const lockN = requestedLock != null
-      ? Math.max(0, Math.min(requestedLock, total))
-      : 0;
-    const rackN = requestedRack != null
-      ? Math.max(0, Math.min(requestedRack, total - lockN))
+    const targetLockN = requestedLock != null
+      ? Math.max(0, Math.min(requestedLock, allLightIndices.length))
       : 0;
 
-    candidateIndices.slice(0, lockN).forEach(i => { slotProbs[i] = 2; });
-    candidateIndices.slice(lockN, lockN + rackN).forEach(i => { slotProbs[i] = 0; });
-    // Remaining indices (lockN + rackN .. total) — slotProbs unchanged.
+    const pickNonAdjacent = (positions, n) => {
+      const work = shuffle([...positions]);
+      const chosen = [];
+      for (const idx of work) {
+        if (chosen.length >= n) break;
+        if (chosen.every(p => Math.abs(p - idx) > 1)) chosen.push(idx);
+      }
+      return chosen;
+    };
+
+    // Greedy with multi-shuffle retry — keep the best (largest) pick
+    // that still respects gap >= 2.  A single shuffle is order-sensitive
+    // so we retry to escape unlucky orderings that miss valid independent
+    // sets.
+    let lockSelected = pickNonAdjacent(allLightIndices, targetLockN);
+    for (let attempt = 0; attempt < 8 && lockSelected.length < targetLockN; attempt++) {
+      const tried = pickNonAdjacent(allLightIndices, targetLockN);
+      if (tried.length > lockSelected.length) lockSelected = tried;
+    }
+    const lockedSet = new Set(lockSelected);
+    lockSelected.forEach(i => { slotProbs[i] = 2; });
+
+    // Rack: any remaining lights (after lock selection).
+    const remainingLights = allLightIndices.filter(i => !lockedSet.has(i));
+    const rackN = requestedRack != null
+      ? Math.max(0, Math.min(requestedRack, remainingLights.length))
+      : 0;
+    shuffle(remainingLights).slice(0, rackN).forEach(i => { slotProbs[i] = 0; });
+
+    // Operator-shielding
+    // ------------------
+    // When `__normal__` is fully satisfiable (we found targetLockN
+    // non-adjacent lights), forbid operators / '=' / heavies / blanks /
+    // choice tiles from being locked.  Without this, selectLockPositions
+    // is free to choose them as weighted-random fills — even though our
+    // mustLock count already equals lockCount, some upstream callers
+    // pass lockCount > targetLockN (e.g. when the placement algo wants
+    // more bonus-cell locks).  Zeroing non-light slotProbs guarantees
+    // every locked tile under an active `__normal__` is a light digit.
+    //
+    // In the rare case `lockSelected.length < targetLockN` (the equation
+    // genuinely has too few non-adjacent lights), we LEAVE non-lights at
+    // their default prob so selectLockPositions can fill the shortfall —
+    // the rack-size invariant (board-locks = totalTile - 8) outweighs
+    // the user's "all lights" preference in this degenerate case.  A
+    // warning would surface from selectLockPositions if even that fails.
+    if (lockSelected.length === targetLockN && targetLockN > 0) {
+      solutionTiles.forEach((tile, i) => {
+        if (pinned.has(i)) return;          // explicit per-type spec wins
+        if (lockedSet.has(i)) return;       // our chosen lock-light
+        if (_isLightDigitTile(tile)) return;// leftover lights stay free
+        slotProbs[i] = 0;
+      });
+    }
   }
 
   return { ...placement, slotProbs };
