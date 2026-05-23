@@ -1,3 +1,4 @@
+import { createElement } from 'react';
 import { Toaster } from "@/components/ui/toaster"
 import { Toaster as SonnerToaster } from "@/components/ui/sonner"
 import { QueryClientProvider } from '@tanstack/react-query'
@@ -13,6 +14,7 @@ import PlayAssignment from './pages/PlayAssignment';
 import AssignmentDetail from './pages/AssignmentDetail';
 import AdminAssignmentDetail from './pages/AdminAssignmentDetail';
 import CreateAssignment from './pages/CreateAssignment';
+import GeneratorQuality from './pages/GeneratorQuality';
 import { SpeedInsights } from "@vercel/speed-insights/react";
 
 const { Pages, Layout, mainPage } = pagesConfig;
@@ -24,7 +26,7 @@ const LayoutWrapper = ({ children, currentPageName }) => Layout ?
   : <>{children}</>;
 
 const AuthenticatedApp = () => {
-  const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
+  const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
 
   // Show loading spinner while checking auth
   if (isLoadingPublicSettings || isLoadingAuth) {
@@ -42,6 +44,7 @@ const AuthenticatedApp = () => {
     } else if (authError.type === 'auth_required') {
       return (
         <Routes>
+          <Route path="/generator-quality" element={<GeneratorQuality />} />
           <Route path="/login" element={<Login />} />
           <Route path="/Register" element={<Register />} />
           <Route path="*" element={<Navigate to="/login" replace />} />
@@ -59,6 +62,7 @@ const AuthenticatedApp = () => {
         </LayoutWrapper>
       } />
       <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/generator-quality" element={<GeneratorQuality />} />
       {/* Full-screen assignment player — no layout wrapper */}
       <Route path="/play/:assignmentId" element={<PlayAssignment />} />
       {/* Assignment detail pages — with layout */}
@@ -77,17 +81,20 @@ const AuthenticatedApp = () => {
           <CreateAssignment />
         </LayoutWrapper>
       } />
-      {Object.entries(Pages).map(([path, Page]) => (
-        <Route
-          key={path}
-          path={`/${path}`}
-          element={
-            <LayoutWrapper currentPageName={path}>
-              <Page />
-            </LayoutWrapper>
-          }
-        />
-      ))}
+      {Object.entries(Pages).map(([path, PageComponent]) => {
+        const pageElement = createElement(PageComponent);
+        return (
+          <Route
+            key={path}
+            path={`/${path}`}
+            element={
+              <LayoutWrapper currentPageName={path}>
+                {pageElement}
+              </LayoutWrapper>
+            }
+          />
+        );
+      })}
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
