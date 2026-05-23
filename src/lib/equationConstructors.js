@@ -33,6 +33,13 @@ import {
   numTiles, equationToTileCounts, sumCounts, withinPoolLimits,
 } from './tileHelpers.js';
 
+// Tile-bag aware single-tile picker.  Used ONLY for `pickNumForBudget(1)`
+// in this PR; budgets 2 and 3 keep their existing random-then-reject
+// scheme because their digit-availability filtering (`avail` set) already
+// approximates pool-proportional sampling.  See tileProbability.ts for
+// rationale and tests.
+import { weightedPickByPool } from './tileProbability';
+
 // ── Pool context for the current constructEquationV6 call ─────────────────────
 // Set at the start of each constructEquationV6 call so that pickNumForBudget
 // can generate digit values that are actually available in the tile bag.
@@ -201,7 +208,19 @@ function pickNumForBudget(budget) {
       for (let n = 10; n <= 20; n++) { if ((pd[String(n)] ?? 0) > 0) cands.push(n); }
       // Single-digit values need their specific digit tile to be in the pool.
       for (let n = 1; n <= 9; n++)   { if (avail.has(String(n))) cands.push(n); }
-      if (cands.length) return cands[0 | (Math.random() * cands.length)];
+      if (cands.length) {
+        // Weighted draw — heavies have count 1, lights have count 4 in the
+        // standard A-Math bag.  Uniform sampling here over-represented
+        // heavies (~55% vs the bag-true ~23%); pool-weighted sampling
+        // recovers the natural distribution while still respecting
+        // custom pools (e.g. a no-heavy classroom pack via poolDef[n]=0).
+        const pick = weightedPickByPool(cands, pd);
+        if (pick !== null) return pick;
+        // Falls through only if every cand has zero pool weight, which
+        // shouldn't happen given we already filtered by availability —
+        // keep the legacy uniform pick as defensive fallback.
+        return cands[0 | (Math.random() * cands.length)];
+      }
     }
     return randInt(1, 20);
   }
