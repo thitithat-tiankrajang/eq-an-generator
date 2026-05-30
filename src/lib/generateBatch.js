@@ -9,9 +9,14 @@ import { buildGeneratorConfig, DEFAULT_ADV_CFG } from '@/components/bingo/BingoA
  * @param {function} handlers.onEach  - (result, done, total) — called per puzzle
  * @param {function} handlers.onDone  - () — all done
  * @param {function} handlers.onError - (Error) — generator threw
+ * @param {object}   [handlers.plannerOptions] - Optional generatorDiversityPlanner options.
+ *   See bingoWorker.js for the supported shape:
+ *     candidatesPerCfg: number   // default 3 (set 1 to disable diversity planning)
+ *     allowedOperators: string[] // default derived from cfgList
+ *     topConcentrationTarget, weights: see generatorDiversityPlanner.js
  * @returns {function} cancel — terminates the worker immediately
  */
-export function generateBatchAsync(cfgList, { onEach, onDone, onError }) {
+export function generateBatchAsync(cfgList, { onEach, onDone, onError, plannerOptions } = {}) {
   const worker = new Worker(
     new URL('./bingoWorker.js', import.meta.url),
     { type: 'module' }
@@ -34,7 +39,7 @@ export function generateBatchAsync(cfgList, { onEach, onDone, onError }) {
     onError?.(new Error(e.message ?? 'Worker error'));
   };
 
-  worker.postMessage({ type: 'generate', cfgList });
+  worker.postMessage({ type: 'generate', cfgList, plannerOptions });
 
   return () => worker.terminate();
 }

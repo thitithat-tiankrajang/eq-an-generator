@@ -1,135 +1,517 @@
-import { useState, useRef, useCallback } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowDownUp,
+  BarChart2,
+  CheckCircle2,
+  Gauge,
+  Hash,
+  ListOrdered,
+  RefreshCw,
+  Repeat2,
+  Sigma,
+  SlidersHorizontal,
+  Sparkles,
+  Target,
+} from "lucide-react";
 import { BingoConfig, DEFAULT_SETS } from "@/components/bingo/BingoConfig";
 import { generateBatchAsync, buildCfgList } from "@/lib/generateBatch";
-import { tokenizeEquation, OPS_ALL } from "@/lib/bingoMath";
-import { HEAVY_SET } from "@/lib/tileHelpers";
-import { BarChart2, ListOrdered, ArrowDownUp, SortAsc } from "lucide-react";
-
-// ── Pattern helpers ───────────────────────────────────────────────────────────
-
-function equationToPattern(eq) {
-  const tokens = tokenizeEquation(eq);
-  if (!tokens) return "(invalid)";
-  return tokens.map(tok => {
-    if (tok === "=") return "=";
-    if (OPS_ALL.includes(tok)) return tok;
-    if (tok === "+/-" || tok === "×/÷" || tok === "?") return tok;
-    return "O";
-  }).join("");
-}
+import {
+  CORE_OPERATORS,
+  TILE_CATEGORY_ORDER,
+  analyzeGeneratedPuzzles,
+  deriveAllowedOperatorsFromConfigs,
+  formatPercent,
+  qualityTone,
+} from "@/lib/diversityAnalysis";
 
 const OP_COLORS = {
-  "=": "text-stone-400",
-  "+": "text-blue-500",
-  "-": "text-rose-500",
-  "×": "text-violet-500",
-  "÷": "text-amber-500",
-  "+/-": "text-teal-500",
-  "×/÷": "text-fuchsia-500",
-  "?": "text-stone-400",
-  "O": "text-stone-700 font-bold",
+  "+": "text-sky-600 bg-sky-50 border-sky-200",
+  "-": "text-rose-600 bg-rose-50 border-rose-200",
+  "×": "text-violet-600 bg-violet-50 border-violet-200",
+  "÷": "text-amber-700 bg-amber-50 border-amber-200",
 };
 
+const OP_BAR_COLORS = {
+  "+": "bg-sky-500",
+  "-": "bg-rose-500",
+  "×": "bg-violet-500",
+  "÷": "bg-amber-500",
+};
+
+const TONE = {
+  excellent: {
+    label: "Excellent",
+    text: "text-emerald-700",
+    bg: "bg-emerald-50",
+    border: "border-emerald-200",
+  },
+  good: {
+    label: "Good",
+    text: "text-teal-700",
+    bg: "bg-teal-50",
+    border: "border-teal-200",
+  },
+  watch: {
+    label: "Watch",
+    text: "text-amber-700",
+    bg: "bg-amber-50",
+    border: "border-amber-200",
+  },
+  risk: {
+    label: "Risk",
+    text: "text-rose-700",
+    bg: "bg-rose-50",
+    border: "border-rose-200",
+  },
+};
+
+function selectedOperatorsFromState(state) {
+  return CORE_OPERATORS.filter(operator => state[operator]);
+}
+
+function patternTokens(pattern) {
+  return String(pattern).split("").map((ch, index) => {
+    if (ch === "O") return { key: index, ch: "N", className: "text-slate-800 font-black" };
+    if (ch === "=") return { key: index, ch, className: "text-slate-400" };
+    if (ch === "+") return { key: index, ch, className: "text-sky-600" };
+    if (ch === "-") return { key: index, ch, className: "text-rose-600" };
+    if (ch === "×") return { key: index, ch, className: "text-violet-600" };
+    if (ch === "÷") return { key: index, ch, className: "text-amber-700" };
+    return { key: index, ch, className: "text-slate-500" };
+  });
+}
+
 function ColoredPattern({ pattern }) {
-  const chars = [];
-  let i = 0;
-  while (i < pattern.length) {
-    if (pattern.slice(i, i + 3) === "+/-") {
-      chars.push({ key: i, tok: "+/-", ch: "+/-" }); i += 3;
-    } else if (pattern.slice(i, i + 3) === "×/÷") {
-      chars.push({ key: i, tok: "×/÷", ch: "×/÷" }); i += 3;
-    } else {
-      const ch = pattern[i];
-      const tok = ch === "O" ? "O" : ch === "=" ? "=" : OPS_ALL.includes(ch) ? ch : ch === "?" ? "?" : "O";
-      chars.push({ key: i, tok, ch }); i++;
-    }
-  }
   return (
-    <span className="font-mono text-sm tracking-wide">
-      {chars.map(({ key, tok, ch }) => (
-        <span key={key} className={OP_COLORS[tok] || "text-stone-700"}>{ch}</span>
+    <span className="font-mono text-sm tracking-normal whitespace-nowrap">
+      {patternTokens(pattern).map(token => (
+        <span key={token.key} className={token.className}>{token.ch}</span>
       ))}
     </span>
   );
 }
 
-// ── Empty stats factory ───────────────────────────────────────────────────────
-
-function emptyAcc() {
-  return {
-    success: 0,
-    failed: 0,
-    totalMs: 0,
-    patternMap: {},
-    eqCountMap: {},
-    opTypeMap: { "+": 0, "-": 0, "×": 0, "÷": 0 },
-    heavyCount: 0,
-    wildCount: 0,
-  };
+function pctWidth(value, max, min = 2) {
+  if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0 || value <= 0) return 0;
+  return Math.max(min, Math.min(100, (value / max) * 100));
 }
 
-function updateAcc(acc, result, t0) {
-  if (!result) { acc.failed++; return; }
-  acc.success++;
-  const pat = equationToPattern(result.equation);
-  acc.patternMap[pat] = (acc.patternMap[pat] || 0) + 1;
-  acc.eqCountMap[result.eqCount] = (acc.eqCountMap[result.eqCount] || 0) + 1;
+function Panel(props) {
+  const { title, icon: Icon, sub, children, action } = props;
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-100 text-slate-600">
+            <Icon className="h-4 w-4" />
+          </div>
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">{title}</h3>
+            {sub && <p className="text-xs text-slate-500">{sub}</p>}
+          </div>
+        </div>
+        {action}
+      </div>
+      <div className="p-4">
+        {children}
+      </div>
+    </section>
+  );
+}
 
-  const tiles = result.solutionTiles ?? [];
-  if (tiles.some(t => HEAVY_SET.has(t))) acc.heavyCount++;
-  if (tiles.some(t => t === "?" || t === "+/-" || t === "×/÷")) acc.wildCount++;
+function MetricCard(props) {
+  const { label, value, sub, icon: Icon, tone = "good" } = props;
+  const style = TONE[tone] || TONE.good;
+  return (
+    <div className={`rounded-lg border ${style.border} ${style.bg} p-4`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className={`text-2xl font-black tabular-nums ${style.text}`}>{value}</p>
+          <p className="mt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{label}</p>
+          {sub && <p className="mt-1 text-xs text-slate-500">{sub}</p>}
+        </div>
+        <Icon className={`h-5 w-5 ${style.text}`} />
+      </div>
+    </div>
+  );
+}
 
-  const toks = tokenizeEquation(result.equation) ?? [];
-  for (const tok of toks) {
-    if (OPS_ALL.includes(tok)) acc.opTypeMap[tok] = (acc.opTypeMap[tok] || 0) + 1;
+function QualityGauge({ score }) {
+  const toneKey = qualityTone(score);
+  const tone = TONE[toneKey];
+  const degrees = Math.round(score * 360);
+
+  return (
+    <div className={`rounded-lg border ${tone.border} ${tone.bg} p-4`}>
+      <div className="flex items-center gap-4">
+        <div
+          className="grid h-24 w-24 shrink-0 place-items-center rounded-full"
+          style={{
+            background: `conic-gradient(#0f766e ${degrees}deg, #e2e8f0 ${degrees}deg 360deg)`,
+          }}
+        >
+          <div className="grid h-16 w-16 place-items-center rounded-full bg-white shadow-inner">
+            <span className={`text-xl font-black ${tone.text}`}>{Math.round(score * 100)}</span>
+          </div>
+        </div>
+        <div className="min-w-0">
+          <p className={`text-lg font-black ${tone.text}`}>{tone.label} diversity</p>
+          <p className="mt-1 text-sm text-slate-600">
+            Composite score from pattern coverage, entropy, concentration, operator balance, and repeat-number health.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BarRow({ label, value, max, color = "bg-teal-500", suffix, detail }) {
+  return (
+    <div className="grid grid-cols-[minmax(4rem,7rem)_1fr_auto] items-center gap-3">
+      <span className="truncate text-xs font-semibold text-slate-600">{label}</span>
+      <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+        <div className={`${color} h-full rounded-full transition-all duration-200`} style={{ width: `${pctWidth(value, max)}%` }} />
+      </div>
+      <span className="w-16 text-right text-xs tabular-nums text-slate-500">{suffix ?? value}</span>
+      {detail && <span className="col-start-2 col-end-4 -mt-1 text-xs text-slate-400">{detail}</span>}
+    </div>
+  );
+}
+
+function OperatorBaselineControls({ baseline, setBaseline, onSyncFromConfig }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Balance target</span>
+      {CORE_OPERATORS.map(operator => (
+        <button
+          type="button"
+          key={operator}
+          onClick={() => setBaseline(prev => ({ ...prev, [operator]: !prev[operator] }))}
+          className={`h-8 min-w-8 rounded-md border px-2 text-sm font-black transition ${
+            baseline[operator]
+              ? OP_COLORS[operator]
+              : "border-slate-200 bg-white text-slate-300 hover:text-slate-500"
+          }`}
+          title={`Toggle ${operator} in balance target`}
+        >
+          {operator}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={onSyncFromConfig}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+      >
+        <RefreshCw className="h-3.5 w-3.5" />
+        Sync config
+      </button>
+    </div>
+  );
+}
+
+function OperatorBalancePanel({ stats }) {
+  const max = Math.max(...Object.values(stats.operatorBalance.counts), 1);
+  return (
+    <Panel
+      title="Operator Balance"
+      icon={Target}
+      sub={`Expected about ${stats.operatorBalance.expected.toFixed(1)} each across ${stats.operatorBalance.operators.join(" ")}.`}
+    >
+      <div className="space-y-3">
+        {stats.operatorBalance.operators.map(operator => {
+          const count = stats.operatorBalance.counts[operator] || 0;
+          const share = stats.operatorBalance.total > 0 ? count / stats.operatorBalance.total : 0;
+          return (
+            <BarRow
+              key={operator}
+              label={operator}
+              value={count}
+              max={max}
+              color={OP_BAR_COLORS[operator]}
+              suffix={`${formatPercent(share)} · ${count}`}
+            />
+          );
+        })}
+        <div className="rounded-md bg-slate-50 p-3 text-xs text-slate-600">
+          Balance score <span className="font-black text-slate-900">{Math.round(stats.operatorBalance.score * 100)}</span>
+          <span className="mx-2 text-slate-300">|</span>
+          spread {formatPercent(stats.operatorBalance.spreadPct)}
+          <span className="mx-2 text-slate-300">|</span>
+          mean deviation {formatPercent(stats.operatorBalance.meanDeviationPct)}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function TileCategoryPanel({ stats }) {
+  const max = Math.max(...Object.values(stats.tileCategoryMap), 1);
+  const labels = {
+    light: "Light numbers",
+    heavy: "Heavy numbers",
+    operator: "Operators",
+    equal: "Equals",
+    wild: "Wildcards",
+    other: "Other",
+  };
+  const colors = {
+    light: "bg-teal-500",
+    heavy: "bg-indigo-500",
+    operator: "bg-sky-500",
+    equal: "bg-slate-400",
+    wild: "bg-fuchsia-500",
+    other: "bg-stone-400",
+  };
+
+  return (
+    <Panel title="Tile Category Mix" icon={Sigma} sub={`${stats.totalTileTokens} generated tile tokens analyzed.`}>
+      <div className="space-y-3">
+        {TILE_CATEGORY_ORDER.map(category => {
+          const count = stats.tileCategoryMap[category] || 0;
+          const share = stats.totalTileTokens > 0 ? count / stats.totalTileTokens : 0;
+          return (
+            <BarRow
+              key={category}
+              label={labels[category]}
+              value={count}
+              max={max}
+              color={colors[category]}
+              suffix={`${formatPercent(share)} · ${count}`}
+            />
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function RepeatRiskPanel({ stats }) {
+  const maxRepeat = Math.max(...Object.values(stats.repeatedNumberMap), 1);
+  const repeatedEntries = Object.entries(stats.repeatedNumberMap)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 8);
+
+  return (
+    <Panel
+      title="Repeated Number Risk"
+      icon={Repeat2}
+      sub="Flags puzzles where the same number value appears too often."
+    >
+      <div className="grid gap-4 lg:grid-cols-[1fr_1.15fr]">
+        <div className="space-y-2">
+          <div className="rounded-md bg-slate-50 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Repeat health</p>
+            <p className="mt-1 text-2xl font-black text-slate-900">{Math.round(stats.repeatRisk.score * 100)}</p>
+            <p className="text-xs text-slate-500">
+              Excessive repeats: {formatPercent(stats.repeatRisk.excessiveRate)} · Severe: {formatPercent(stats.repeatRisk.severeRate)}
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="rounded-md bg-white p-2 ring-1 ring-slate-100">
+              <p className="text-lg font-black text-slate-800">{stats.repeatRisk.duplicatePuzzles}</p>
+              <p className="text-[11px] text-slate-500">duplicate</p>
+            </div>
+            <div className="rounded-md bg-amber-50 p-2 ring-1 ring-amber-100">
+              <p className="text-lg font-black text-amber-700">{stats.repeatRisk.excessivePuzzles}</p>
+              <p className="text-[11px] text-amber-700">3+ same</p>
+            </div>
+            <div className="rounded-md bg-rose-50 p-2 ring-1 ring-rose-100">
+              <p className="text-lg font-black text-rose-700">{stats.repeatRisk.severePuzzles}</p>
+              <p className="text-[11px] text-rose-700">4+ same</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {repeatedEntries.length === 0 ? (
+            <div className="rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-400">
+              No repeated-number pressure detected in this sample.
+            </div>
+          ) : (
+            repeatedEntries.map(([number, pressure]) => (
+              <BarRow
+                key={number}
+                label={`number ${number}`}
+                value={pressure}
+                max={maxRepeat}
+                color="bg-amber-500"
+                suffix={pressure}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      {stats.warningExamples.length > 0 && (
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Examples to inspect</p>
+          <div className="grid gap-2">
+            {stats.warningExamples.slice(0, 4).map(example => (
+              <div key={example.equation} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 font-mono text-xs text-amber-900">
+                {example.equation}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function PatternList({ stats, sortMode, setSortMode }) {
+  const entries = [...stats.patternEntries].sort(sortMode === "az"
+    ? ([a], [b]) => a.localeCompare(b)
+    : ([, a], [, b]) => b - a
+  );
+  const max = entries[0]?.[1] || 1;
+
+  return (
+    <Panel
+      title="Pattern Distribution"
+      icon={ListOrdered}
+      sub={`${stats.uniquePatternCount} unique patterns from ${stats.success} generated puzzles.`}
+      action={
+        <div className="flex rounded-md bg-slate-100 p-0.5">
+          <button
+            type="button"
+            onClick={() => setSortMode("freq")}
+            className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold ${sortMode === "freq" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+          >
+            <ArrowDownUp className="h-3 w-3" />
+            Frequency
+          </button>
+          <button
+            type="button"
+            onClick={() => setSortMode("az")}
+            className={`rounded px-2 py-1 text-xs font-semibold ${sortMode === "az" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500"}`}
+          >
+            A-Z
+          </button>
+        </div>
+      }
+    >
+      <div className="max-h-[28rem] space-y-1.5 overflow-y-auto pr-1">
+        {entries.map(([pattern, count], index) => {
+          const share = stats.success > 0 ? count / stats.success : 0;
+          return (
+            <div key={pattern} className="grid grid-cols-[2rem_minmax(8rem,12rem)_1fr_4rem] items-center gap-3 rounded-md px-2 py-2 hover:bg-slate-50">
+              <span className="text-xs text-slate-300">#{index + 1}</span>
+              <div className="min-w-0">
+                <ColoredPattern pattern={pattern} />
+                <p className="truncate text-[11px] text-slate-400">{stats.examplesByPattern[pattern]}</p>
+              </div>
+              <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                <div className="h-full rounded-full bg-teal-500" style={{ width: `${pctWidth(count, max)}%` }} />
+              </div>
+              <div className="text-right text-xs tabular-nums text-slate-500">
+                <p>{formatPercent(share)}</p>
+                <p className="text-slate-300">{count}</p>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2 border-t border-slate-100 pt-3 md:grid-cols-4">
+        {[
+          { label: "Common 20%+", value: entries.filter(([, count]) => stats.success > 0 && count / stats.success >= 0.2).length, tone: "text-rose-600" },
+          { label: "Moderate 5-20%", value: entries.filter(([, count]) => stats.success > 0 && count / stats.success >= 0.05 && count / stats.success < 0.2).length, tone: "text-amber-700" },
+          { label: "Rare 2-5%", value: entries.filter(([, count]) => stats.success > 0 && count / stats.success >= 0.02 && count / stats.success < 0.05).length, tone: "text-slate-600" },
+          { label: "Singleton", value: entries.filter(([, count]) => count === 1).length, tone: "text-teal-700" },
+        ].map(item => (
+          <div key={item.label} className="rounded-md bg-slate-50 p-2 text-center">
+            <p className={`text-lg font-black ${item.tone}`}>{item.value}</p>
+            <p className="text-[11px] text-slate-500">{item.label}</p>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function OperatorMixPanel({ stats }) {
+  const entries = stats.operatorMixEntries.slice(0, 10);
+  const max = entries[0]?.[1] || 1;
+
+  return (
+    <Panel title="Operator Shape Mix" icon={Hash} sub="Counts by per-puzzle operator signature.">
+      <div className="space-y-2">
+        {entries.map(([signature, count]) => (
+          <BarRow
+            key={signature}
+            label={signature}
+            value={count}
+            max={max}
+            color="bg-indigo-500"
+            suffix={`${formatPercent(count / stats.success)} · ${count}`}
+          />
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function QualityNotes({ stats }) {
+  const notes = [];
+  if (stats.sampleCoverage < 0.75) {
+    notes.push({
+      tone: "risk",
+      text: "Pattern reuse is high for this sample size. Candidate selection should spread chosen patterns more aggressively.",
+    });
   }
-  acc.totalMs = performance.now() - t0;
-}
+  if (stats.topPatternShare > 0.22) {
+    notes.push({
+      tone: "risk",
+      text: "One pattern is taking too much share. Add concentration penalty during pattern selection.",
+    });
+  }
+  if (stats.operatorBalance.score < 0.68) {
+    notes.push({
+      tone: "watch",
+      text: "Operator mix is biased against the selected baseline. Future generator work should balance allowed operators before realization.",
+    });
+  }
+  if (stats.repeatRisk.excessiveRate > 0.08) {
+    notes.push({
+      tone: "watch",
+      text: "Repeated number values appear often. Add repeat-number penalties after realization or during candidate ranking.",
+    });
+  }
+  if (notes.length === 0) {
+    notes.push({
+      tone: "excellent",
+      text: "This sample looks healthy: patterns are spread, operator bias is low, and repeated-number pressure is controlled.",
+    });
+  }
 
-function snapshotAcc(acc) {
-  return {
-    success: acc.success,
-    failed: acc.failed,
-    totalMs: acc.totalMs,
-    patternMap: { ...acc.patternMap },
-    eqCountMap: { ...acc.eqCountMap },
-    opTypeMap: { ...acc.opTypeMap },
-    heavyCount: acc.heavyCount,
-    wildCount: acc.wildCount,
-  };
-}
-
-// ── Mini components ───────────────────────────────────────────────────────────
-
-function MiniBar({ value, max, color = "bg-amber-400" }) {
-  const pct = max > 0 ? Math.max(2, (value / max) * 100) : 0;
   return (
-    <div className="flex-1 bg-stone-100 rounded-full h-2 overflow-hidden">
-      <div className={`${color} h-full rounded-full transition-all duration-200`} style={{ width: `${pct}%` }} />
-    </div>
+    <Panel title="Quality Review" icon={Sparkles} sub="AI-safe recommendations for the next generator balancing phase.">
+      <div className="space-y-2">
+        {notes.map((note, index) => {
+          const tone = TONE[note.tone];
+          return (
+            <div key={index} className={`flex gap-2 rounded-md border ${tone.border} ${tone.bg} p-3`}>
+              {note.tone === "excellent" ? (
+                <CheckCircle2 className={`mt-0.5 h-4 w-4 shrink-0 ${tone.text}`} />
+              ) : (
+                <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${tone.text}`} />
+              )}
+              <p className="text-sm text-slate-700">{note.text}</p>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
   );
 }
-
-function StatCard({ label, value, sub, color = "text-amber-700", bg = "bg-amber-50" }) {
-  return (
-    <div className={`${bg} rounded-xl p-3 flex flex-col gap-0.5`}>
-      <p className={`text-xl font-bold ${color}`}>{value}</p>
-      <p className="text-xs text-stone-500">{label}</p>
-      {sub && <p className="text-xs text-stone-400">{sub}</p>}
-    </div>
-  );
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
-const EQ_COLORS = ["bg-stone-300", "bg-amber-400", "bg-amber-600", "bg-amber-800"];
-const OP_BAR_COLORS = { "+": "bg-blue-400", "-": "bg-rose-400", "×": "bg-violet-400", "÷": "bg-amber-400" };
 
 export function GeneratorAnalysis() {
   const [mode, setMode] = useState("cross");
   const [crossBonus, setCrossBonus] = useState(true);
   const [puzzleSets, setPuzzleSets] = useState(DEFAULT_SETS);
+  const [operatorBaseline, setOperatorBaseline] = useState({ "+": true, "-": true, "×": true, "÷": true });
+  const [possiblePatternInput, setPossiblePatternInput] = useState("");
 
   const [running, setRunning] = useState(false);
   const [genProgress, setGenProgress] = useState(null);
@@ -140,9 +522,28 @@ export function GeneratorAnalysis() {
 
   const cancelRef = useRef(null);
   const tileSetsCache = useRef([]);
-  const accRef = useRef(null);
+  const resultsRef = useRef([]);
+  const analysisOptionsRef = useRef({});
   const t0Ref = useRef(0);
   const lastRenderRef = useRef(0);
+
+  const selectedOperators = useMemo(() => {
+    const selected = selectedOperatorsFromState(operatorBaseline);
+    return selected.length > 0 ? selected : [...CORE_OPERATORS];
+  }, [operatorBaseline]);
+
+  const syncBaselineFromConfig = useCallback(() => {
+    const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache.current, crossBonus);
+    const inferred = deriveAllowedOperatorsFromConfigs(cfgList);
+    setOperatorBaseline(Object.fromEntries(CORE_OPERATORS.map(operator => [operator, inferred.includes(operator)])));
+  }, [crossBonus, mode, puzzleSets]);
+
+  const analyzeNow = useCallback(() => {
+    return analyzeGeneratedPuzzles(resultsRef.current, {
+      ...analysisOptionsRef.current,
+      elapsedMs: performance.now() - t0Ref.current,
+    });
+  }, []);
 
   const handleRun = useCallback(() => {
     cancelRef.current?.();
@@ -151,26 +552,36 @@ export function GeneratorAnalysis() {
     setRunning(true);
 
     const cfgList = buildCfgList(puzzleSets, mode, tileSetsCache.current, crossBonus);
-    setGenProgress({ done: 0, total: cfgList.length });
+    const inferred = deriveAllowedOperatorsFromConfigs(cfgList);
+    const allowedOperators = inferred.length !== CORE_OPERATORS.length ? inferred : selectedOperators;
+    const possiblePatternCount = Number.parseInt(possiblePatternInput, 10);
 
-    const acc = emptyAcc();
-    accRef.current = acc;
+    if (inferred.length !== CORE_OPERATORS.length) {
+      setOperatorBaseline(Object.fromEntries(CORE_OPERATORS.map(operator => [operator, inferred.includes(operator)])));
+    }
+
+    resultsRef.current = [];
+    analysisOptionsRef.current = {
+      requestedCount: cfgList.length,
+      possiblePatternCount: Number.isFinite(possiblePatternCount) && possiblePatternCount > 0 ? possiblePatternCount : null,
+      allowedOperators,
+    };
     t0Ref.current = performance.now();
+    setGenProgress({ done: 0, total: cfgList.length });
 
     cancelRef.current = generateBatchAsync(cfgList, {
       onEach: (result, done, total) => {
-        updateAcc(acc, result, t0Ref.current);
+        resultsRef.current.push(result);
         setGenProgress({ done, total });
 
-        // Throttle React re-renders to ~20fps
         const now = performance.now();
-        if (now - lastRenderRef.current > 50 || done === total) {
+        if (now - lastRenderRef.current > 80 || done === total) {
           lastRenderRef.current = now;
-          setStats(snapshotAcc(acc));
+          setStats(analyzeNow());
         }
       },
       onDone: () => {
-        setStats(snapshotAcc(acc));
+        setStats(analyzeNow());
         setGenCount(n => n + 1);
         setRunning(false);
         setGenProgress(null);
@@ -183,7 +594,7 @@ export function GeneratorAnalysis() {
         cancelRef.current = null;
       },
     });
-  }, [mode, crossBonus, puzzleSets]);
+  }, [analyzeNow, crossBonus, mode, possiblePatternInput, puzzleSets, selectedOperators]);
 
   const handleCancel = useCallback(() => {
     cancelRef.current?.();
@@ -192,25 +603,44 @@ export function GeneratorAnalysis() {
     setGenProgress(null);
   }, []);
 
-  // ── Derived display ───────────────────────────────────────────────────────
-
-  let sortedPatterns = [];
-  if (stats) {
-    sortedPatterns = Object.entries(stats.patternMap);
-    sortedPatterns.sort(sortMode === "freq"
-      ? ([, a], [, b]) => b - a
-      : ([a], [b]) => a.localeCompare(b)
-    );
-  }
-  const maxPatternCount = sortedPatterns[0]?.[1] ?? 1;
-  const totalOpTokens = stats ? Object.values(stats.opTypeMap).reduce((s, v) => s + v, 0) : 0;
-  const maxEqCount = stats ? Math.max(...Object.values(stats.eqCountMap), 1) : 1;
-  const total = stats ? stats.success + stats.failed : 0;
-
   return (
     <div className="space-y-5">
+      <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="max-w-2xl">
+            <div className="flex items-center gap-2">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                <Gauge className="h-5 w-5" />
+              </div>
+              <div>
+                <h2 className="text-lg font-black text-slate-950">Generator Diversity Lab</h2>
+                <p className="text-sm text-slate-500">
+                  Generate a sample batch, then inspect pattern spread, operator bias, tile mix, and repeated-number pressure.
+                </p>
+              </div>
+            </div>
+          </div>
 
-      {/* BingoConfig — same as Generator.jsx */}
+          <div className="grid gap-3">
+            <OperatorBaselineControls
+              baseline={operatorBaseline}
+              setBaseline={setOperatorBaseline}
+              onSyncFromConfig={syncBaselineFromConfig}
+            />
+            <label className="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Possible pattern universe
+              <input
+                value={possiblePatternInput}
+                onChange={event => setPossiblePatternInput(event.target.value.replace(/[^\d]/g, ""))}
+                placeholder="optional, e.g. 1000"
+                inputMode="numeric"
+                className="h-8 w-40 rounded-md border border-slate-200 bg-white px-2 text-sm font-medium normal-case tracking-normal text-slate-800 outline-none focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+              />
+            </label>
+          </div>
+        </div>
+      </div>
+
       <BingoConfig
         mode={mode} setMode={setMode}
         crossBonus={crossBonus} setCrossBonus={setCrossBonus}
@@ -226,154 +656,74 @@ export function GeneratorAnalysis() {
         onTileSetsLoaded={sets => { tileSetsCache.current = sets; }}
       />
 
-      {/* Results */}
       {stats && (
         <>
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard
-              label="Success rate"
-              value={total > 0 ? `${((stats.success / total) * 100).toFixed(1)}%` : "—"}
-              sub={`${stats.success} / ${total} puzzles`}
-              color="text-emerald-700" bg="bg-emerald-50"
+          <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr_1fr]">
+            <QualityGauge score={stats.score} />
+            <MetricCard
+              label="Sample Coverage"
+              value={formatPercent(stats.sampleCoverage)}
+              sub={`${stats.uniquePatternCount} unique from ${stats.success} generated`}
+              icon={BarChart2}
+              tone={stats.sampleCoverage >= 0.8 ? "excellent" : stats.sampleCoverage >= 0.65 ? "good" : "watch"}
             />
-            <StatCard
-              label="Unique patterns"
-              value={Object.keys(stats.patternMap).length}
-              sub={`from ${stats.success} puzzles`}
-              color="text-amber-700" bg="bg-amber-50"
-            />
-            <StatCard
-              label="Avg time"
-              value={stats.success > 0 ? `${(stats.totalMs / stats.success).toFixed(2)}ms` : "—"}
-              sub={`total ${stats.totalMs.toFixed(0)}ms`}
-              color="text-violet-700" bg="bg-violet-50"
-            />
-            <StatCard
-              label="Heavy tiles"
-              value={stats.success > 0 ? `${((stats.heavyCount / stats.success) * 100).toFixed(1)}%` : "—"}
-              sub={`wild: ${stats.success > 0 ? ((stats.wildCount / stats.success) * 100).toFixed(1) : "—"}%`}
-              color="text-stone-700" bg="bg-stone-100"
+            <MetricCard
+              label="Possible Coverage"
+              value={stats.possibleCoverage == null ? "—" : formatPercent(stats.possibleCoverage, 2)}
+              sub={stats.possiblePatternCount ? `${stats.uniquePatternCount} / ${stats.possiblePatternCount} possible patterns` : "Add a universe size to show this."}
+              icon={SlidersHorizontal}
+              tone={stats.possibleCoverage == null || stats.possibleCoverage < 0.03 ? "good" : "excellent"}
             />
           </div>
 
-          {/* Charts row */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-
-            {/* eqCount chart */}
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-4 space-y-3">
-                <p className="text-xs font-semibold text-stone-600 uppercase tracking-wider">Equal signs per puzzle</p>
-                {Object.entries(stats.eqCountMap)
-                  .sort(([a], [b]) => Number(a) - Number(b))
-                  .map(([ec, cnt], idx) => (
-                    <div key={ec} className="flex items-center gap-3">
-                      <span className="text-xs text-stone-500 w-16 shrink-0">eqCount={ec}</span>
-                      <MiniBar value={cnt} max={maxEqCount} color={EQ_COLORS[idx] || "bg-amber-400"} />
-                      <span className="text-xs text-stone-600 w-12 text-right shrink-0">
-                        {stats.success > 0 ? ((cnt / stats.success) * 100).toFixed(1) : 0}%
-                      </span>
-                    </div>
-                  ))}
-              </CardContent>
-            </Card>
-
-            {/* Operator type chart */}
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-4 space-y-3">
-                <p className="text-xs font-semibold text-stone-600 uppercase tracking-wider">Operator type distribution</p>
-                {["+", "-", "×", "÷"].map(op => {
-                  const cnt = stats.opTypeMap[op] || 0;
-                  return (
-                    <div key={op} className="flex items-center gap-3">
-                      <span className={`text-sm font-mono w-6 shrink-0 ${OP_COLORS[op]}`}>{op}</span>
-                      <MiniBar value={cnt} max={totalOpTokens} color={OP_BAR_COLORS[op]} />
-                      <span className="text-xs text-stone-600 w-12 text-right shrink-0">
-                        {totalOpTokens > 0 ? ((cnt / totalOpTokens) * 100).toFixed(1) : 0}%
-                      </span>
-                    </div>
-                  );
-                })}
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <MetricCard
+              label="Entropy Evenness"
+              value={formatPercent(stats.normalizedPatternEntropy)}
+              sub={`${stats.patternEntropy.toFixed(2)} bits`}
+              icon={Sparkles}
+              tone={stats.normalizedPatternEntropy >= 0.82 ? "excellent" : "watch"}
+            />
+            <MetricCard
+              label="Top Pattern Share"
+              value={formatPercent(stats.topPatternShare)}
+              sub={`${stats.topPatternCount} hits`}
+              icon={Target}
+              tone={stats.topPatternShare <= 0.12 ? "excellent" : stats.topPatternShare <= 0.22 ? "good" : "risk"}
+            />
+            <MetricCard
+              label="Operator Balance"
+              value={Math.round(stats.operatorBalance.score * 100)}
+              sub={`target: ${stats.operatorBalance.operators.join(" ")}`}
+              icon={Sigma}
+              tone={qualityTone(stats.operatorBalance.score)}
+            />
+            <MetricCard
+              label="Repeat Health"
+              value={Math.round(stats.repeatRisk.score * 100)}
+              sub={`${stats.repeatRisk.excessivePuzzles} puzzles with 3+ same number`}
+              icon={Repeat2}
+              tone={qualityTone(stats.repeatRisk.score)}
+            />
           </div>
 
-          {/* Pattern list */}
-          <Card className="border-0 shadow-sm">
-            <CardContent className="p-4 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-semibold text-stone-600 uppercase tracking-wider flex items-center gap-1.5">
-                  <ListOrdered className="w-3.5 h-3.5" />
-                  Equation patterns
-                  <span className="normal-case font-normal text-stone-400 ml-1">
-                    ({Object.keys(stats.patternMap).length} unique)
-                  </span>
-                </p>
-                <div className="flex bg-stone-100 rounded-lg p-0.5 gap-0.5">
-                  <button
-                    onClick={() => setSortMode("freq")}
-                    className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-md transition-all ${sortMode === "freq" ? "bg-white shadow-sm text-amber-700 font-semibold" : "text-stone-400 hover:text-stone-600"}`}>
-                    <ArrowDownUp className="w-3 h-3" /> Frequency
-                  </button>
-                  <button
-                    onClick={() => setSortMode("az")}
-                    className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-md transition-all ${sortMode === "az" ? "bg-white shadow-sm text-amber-700 font-semibold" : "text-stone-400 hover:text-stone-600"}`}>
-                    <SortAsc className="w-3 h-3" /> A–Z
-                  </button>
-                </div>
-              </div>
+          <div className="grid gap-4 xl:grid-cols-2">
+            <OperatorBalancePanel stats={stats} />
+            <OperatorMixPanel stats={stats} />
+            <TileCategoryPanel stats={stats} />
+            <RepeatRiskPanel stats={stats} />
+          </div>
 
-              <div className="max-h-96 overflow-y-auto space-y-1.5 pr-1">
-                {sortedPatterns.map(([pat, cnt], idx) => {
-                  const pct = stats.success > 0 ? (cnt / stats.success) * 100 : 0;
-                  const barW = maxPatternCount > 0 ? Math.max(2, (cnt / maxPatternCount) * 100) : 0;
-                  return (
-                    <div key={pat}
-                      className="flex items-center gap-3 py-1.5 px-2 rounded-lg hover:bg-amber-50/60 transition-colors group">
-                      {sortMode === "freq" && (
-                        <span className="text-xs text-stone-300 w-6 shrink-0 group-hover:text-stone-400">
-                          #{idx + 1}
-                        </span>
-                      )}
-                      <div className="w-40 shrink-0">
-                        <ColoredPattern pattern={pat} />
-                      </div>
-                      <div className="flex-1 flex items-center gap-2">
-                        <div className="flex-1 bg-stone-100 rounded-full h-2 overflow-hidden">
-                          <div className="bg-amber-300 h-full rounded-full transition-all duration-200"
-                            style={{ width: `${barW}%` }} />
-                        </div>
-                        <span className="text-xs text-stone-500 w-10 text-right shrink-0">{pct.toFixed(1)}%</span>
-                        <span className="text-xs text-stone-400 w-8 text-right shrink-0">{cnt}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-
-              {/* Rarity summary */}
-              <div className="pt-2 border-t border-stone-100 grid grid-cols-2 md:grid-cols-4 gap-2">
-                {[
-                  { label: "≥50× common",   filter: ([, c]) => c >= 50,              color: "text-amber-700"  },
-                  { label: "10–49× moderate",filter: ([, c]) => c >= 10 && c < 50,   color: "text-stone-600"  },
-                  { label: "2–9× rare",      filter: ([, c]) => c >= 2  && c < 10,   color: "text-stone-500"  },
-                  { label: "1× unique",      filter: ([, c]) => c === 1,             color: "text-stone-400"  },
-                ].map(({ label, filter, color }) => (
-                  <div key={label} className="text-center">
-                    <p className={`text-base font-bold ${color}`}>{sortedPatterns.filter(filter).length}</p>
-                    <p className="text-xs text-stone-400">{label}</p>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
+          <QualityNotes stats={stats} />
+          <PatternList stats={stats} sortMode={sortMode} setSortMode={setSortMode} />
         </>
       )}
 
       {!stats && !running && (
-        <div className="text-center py-16 text-stone-300">
-          <BarChart2 className="w-12 h-12 mx-auto mb-3 opacity-40" />
-          <p className="text-sm">Configure and press Generate to see pattern analysis</p>
+        <div className="rounded-lg border border-dashed border-slate-200 bg-white py-16 text-center text-slate-400">
+          <BarChart2 className="mx-auto mb-3 h-12 w-12 opacity-40" />
+          <p className="text-sm font-medium">Configure a batch and press Generate to visualize diversity quality.</p>
+          <p className="mt-1 text-xs">Use 50-200 samples for quick checks, or 1000+ for deeper bias review.</p>
         </div>
       )}
     </div>
