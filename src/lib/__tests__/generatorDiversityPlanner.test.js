@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest';
 import {
   scoreCandidateForBatch,
   pickBestCandidate,
+  pickLeastRepetitiveCandidate,
   buildDiversityBalancedBatch,
 } from '../generatorDiversityPlanner.js';
 import {
@@ -156,14 +157,18 @@ describe('planner — repeat-number penalty', () => {
     expect(picked?.candidate).toBe(clean);
   });
 
-  it('quadruple-repeat scores 0 on repeatHealth (severe penalty)', () => {
+  it('triple-repeat is scored (not rejected) with repeatHealth 0.30', () => {
+    // A triple is a SOFT signal under the default cap (4): penalised via
+    // repeatHealth and demoted by tiered selection, but still scoreable so
+    // a hard config can fall back to it rather than producing nothing.
     const out = scoreCandidateForBatch(
       [],
-      makeResult('1+1+1+1=4'),  // four "1"s
+      makeResult('1+1+1=3'),    // three "1"s
       { allowedOperators: ['+', '-', '×'] },
     );
-    expect(out.breakdown.repeatHealth).toBe(0);
-    expect(out.breakdown.maxRepeat).toBe(4);
+    expect(out.score).toBeGreaterThan(-Infinity);
+    expect(out.breakdown.repeatHealth).toBeCloseTo(0.30, 5);
+    expect(out.breakdown.maxRepeat).toBe(3);
   });
 });
 
@@ -280,5 +285,218 @@ describe('planner — integration with generateBingo (÷ disabled, 30 puzzles)',
     // K=5; 8 is a very loose floor that catches a planner totally
     // broken on novelty.
     expect(stats.uniquePatternCount).toBeGreaterThanOrEqual(8);
+  }, 60_000);
+});
+
+// =================================================================
+//  6. Repeated-number HARD CAP (the explicit เลขซ้ำ fix)
+// =================================================================
+
+describe('planner — repeat-number hard cap', () => {
+  it('hard-rejects a quadruple-flooded equation (default cap 4)', () => {
+    const out = scoreCandidateForBatch(
+      [],
+      makeResult('1+1+1+1=4'),  // four "1"s → maxRepeat 4
+      { allowedOperators: ['+', '-', '×'] },
+    );
+    expect(out.score).toBe(-Infinity);
+    expect(out.breakdown.reason).toBe('repeat-number-cap');
+    expect(out.breakdown.maxRepeat).toBe(4);
+    expect(out.breakdown.cap).toBe(4);
+  });
+
+  it('cap is configurable — repeatHardCap:3 rejects a triple the default keeps', () => {
+    const triple = scoreCandidateForBatch(
+      [], makeResult('1+1+1=3'),
+      { allowedOperators: ['+', '-', '×'], repeatHardCap: 3 },
+    );
+    expect(triple.score).toBe(-Infinity);
+    expect(triple.breakdown.reason).toBe('repeat-number-cap');
+
+    // Same triple is accepted under the default cap (4).
+    const def = scoreCandidateForBatch(
+      [], makeResult('1+1+1=3'),
+      { allowedOperators: ['+', '-', '×'] },
+    );
+    expect(def.score).toBeGreaterThan(-Infinity);
+  });
+
+  it('pickBestCandidate returns null when every candidate floods the cap', () => {
+    const picked = pickBestCandidate(
+      [],
+      [makeResult('1+1+1+1=4'), makeResult('2+2+2+2=8')],
+      { allowedOperators: ['+', '-', '×'] },
+    );
+    expect(picked).toBeNull();
+  });
+
+  it('no flooded equation survives a batch even when half the candidates flood', () => {
+    const cfgList = Array.from({ length: 6 }, () => ({}));
+    // Alternating flood / clean so each slot always has a clean option.
+    const draws = [
+      '1+1+1+1=4',  // flood (maxRepeat 4)
+      '1+2+3=6',    // clean
+      '2+2+2+2=8',  // flood
+      '4+5=9',      // clean
+      '3+3+3+3=12', // flood
+      '7+1=8',      // clean
+    ];
+    let i = 0;
+    const generateOne = () => makeResult(draws[i++ % draws.length]);
+    const selected = buildDiversityBalancedBatch(cfgList, generateOne, {
+      allowedOperators: ['+', '-', '×'],
+      candidatesPerCfg: 2,
+    });
+    expect(selected.length).toBe(6);
+    for (const r of selected) {
+      const counts = {};
+      for (const tok of r.equation.match(/\d+/g) || []) counts[tok] = (counts[tok] || 0) + 1;
+      const maxRepeat = Math.max(0, ...Object.values(counts));
+      expect(maxRepeat).toBeLessThan(4);
+    }
+  });
+});
+
+// =================================================================
+//  7. Tiered selection — clean numbers beat a higher-scoring triple
+// =================================================================
+
+describe('planner — clean tier overrides raw score', () => {
+  it('prefers a clean candidate even when a triple scores higher on other axes', () => {
+    // Force ALL weight onto novelty so the triple (a novel pattern) beats
+    // the clean candidate (a duplicate pattern) on the raw weighted sum.
+    const onlyNovelty = {
+      novelty: 1, topConcentration: 0, operatorBalance: 0, repeatHealth: 0, numberSpread: 0,
+    };
+    const opts = { allowedOperators: ['+', '-', '×'], weights: onlyNovelty };
+
+    const existing    = [makeResult('1+2=3')];  // pattern O+O=O seen once
+    const cleanDup     = makeResult('4+5=9');    // pattern O+O=O (seen) — low novelty, maxRepeat 1
+    const tripleNovel  = makeResult('2+2+2=6');  // pattern O+O+O=O (novel) — high novelty, maxRepeat 3
+
+    const cleanScore  = scoreCandidateForBatch(existing, cleanDup, opts).score;
+    const tripleScore = scoreCandidateForBatch(existing, tripleNovel, opts).score;
+    // Raw score: the novel-pattern triple wins (all weight on novelty).
+    expect(tripleScore).toBeGreaterThan(cleanScore);
+
+    // But tiered selection picks the clean candidate anyway.
+    const picked = pickBestCandidate(existing, [tripleNovel, cleanDup], opts);
+    expect(picked?.candidate).toBe(cleanDup);
+    expect(picked?.breakdown.maxRepeat).toBe(1);
+  });
+
+  it('prefers an all-distinct candidate over a pair (both within the soft cap)', () => {
+    // Both candidates are "clean" under a binary cap; ascending tiering still
+    // prefers the all-distinct one (tier 1) over the pair (tier 2), even when
+    // the pair would win on the raw weighted score.
+    const onlyNovelty = {
+      novelty: 1, topConcentration: 0, operatorBalance: 0, repeatHealth: 0, numberSpread: 0,
+    };
+    const opts = { allowedOperators: ['+', '-', '×'], weights: onlyNovelty };
+
+    const existing     = [makeResult('1+2+3=6')]; // pattern O+O+O=O seen once
+    const distinctDup   = makeResult('4+5+6=15');  // distinct (tier 1), pattern seen → low novelty
+    const pairNovel     = makeResult('7+7=14');    // a pair (tier 2), pattern O+O=O novel → high novelty
+
+    const dScore = scoreCandidateForBatch(existing, distinctDup, opts).score;
+    const pScore = scoreCandidateForBatch(existing, pairNovel, opts).score;
+    expect(pScore).toBeGreaterThan(dScore); // raw score: the pair wins on novelty
+
+    const picked = pickBestCandidate(existing, [pairNovel, distinctDup], opts);
+    expect(picked?.candidate).toBe(distinctDup); // but tiering prefers all-distinct
+    expect(picked?.breakdown.maxRepeat).toBe(1);
+  });
+
+  it('reaches past the soft cap only when no clean candidate exists', () => {
+    // Both candidates are triples (maxRepeat 3) — none clean. The planner
+    // must still return the better-scoring triple rather than null.
+    const a = makeResult('1+1+1=3');
+    const b = makeResult('2+2+2=6');
+    const picked = pickBestCandidate([], [a, b], { allowedOperators: ['+', '-', '×'] });
+    expect(picked).not.toBeNull();
+    expect([a, b]).toContain(picked.candidate);
+    expect(picked.breakdown.maxRepeat).toBe(3);
+  });
+});
+
+// =================================================================
+//  8. numberSpread — batch-level number-value variety
+// =================================================================
+
+describe('planner — numberSpread rewards fresh number values', () => {
+  it('a candidate using over-used values scores lower on numberSpread', () => {
+    // Batch where the value "5" is over-represented.
+    const existing = [
+      makeResult('5+1=6'), makeResult('5+2=7'),
+      makeResult('5+3=8'), makeResult('5+4=9'),
+    ];
+    const opts = { allowedOperators: ['+', '-', '×'] };
+    const reuse = scoreCandidateForBatch(existing, makeResult('5+5=10'), opts);
+    const fresh = scoreCandidateForBatch(existing, makeResult('13+14=27'), opts);
+    expect(fresh.breakdown.numberSpread).toBeGreaterThan(reuse.breakdown.numberSpread);
+  });
+
+  it('an empty batch gives a distinct candidate full numberSpread', () => {
+    const opts = { allowedOperators: ['+', '-', '×'] };
+    const distinct       = scoreCandidateForBatch([], makeResult('1+2=3'), opts);
+    const internalRepeat = scoreCandidateForBatch([], makeResult('5+5=10'), opts);
+    expect(distinct.breakdown.numberSpread).toBe(1);
+    expect(internalRepeat.breakdown.numberSpread).toBeLessThan(1);
+  });
+});
+
+// =================================================================
+//  9. pickLeastRepetitiveCandidate — fallback helper
+// =================================================================
+
+describe('planner — pickLeastRepetitiveCandidate', () => {
+  it('returns the candidate with the fewest intra-equation repeats', () => {
+    const triple = makeResult('1+1+1=3');   // maxRepeat 3
+    const pair   = makeResult('2+2=4');      // maxRepeat 2
+    const clean  = makeResult('1+2+3=6');    // maxRepeat 1
+    expect(pickLeastRepetitiveCandidate([triple, pair, clean])).toBe(clean);
+    expect(pickLeastRepetitiveCandidate([triple, pair])).toBe(pair);
+  });
+
+  it('returns null for an empty or equation-less list', () => {
+    expect(pickLeastRepetitiveCandidate([])).toBeNull();
+    expect(pickLeastRepetitiveCandidate([{}, { foo: 1 }])).toBeNull();
+  });
+});
+
+// =================================================================
+//  10. Integration — repeated-number guarantees end-to-end
+// =================================================================
+//
+//  Same plain-9-tile / ÷-disabled config as test 5, but asserting the
+//  repeated-number contract: the hard cap makes 4+ repeats impossible,
+//  and tiered selection drives the triple rate well below the pre-fix
+//  tolerance.  Operator balance must not regress below its floor.
+
+describe('planner — repeated-number guarantees (÷ disabled, 30 puzzles)', () => {
+  it('no equation floods a number; excessive triples stay rare', () => {
+    const cfg = {
+      mode: 'plain',
+      totalTile: 9,
+      operatorSpec: { '+': [0, 4], '-': [0, 4], '×': [0, 4], '÷': [0, 0] },
+    };
+    const cfgList = Array.from({ length: 30 }, () => cfg);
+    const allowedOperators = deriveAllowedOperatorsFromConfigs(cfgList);
+
+    const batch = buildDiversityBalancedBatch(
+      cfgList,
+      (c) => generateBingo(c),
+      { allowedOperators, candidatesPerCfg: 5 },
+    );
+    expect(batch.length).toBe(30);
+
+    const stats = analyzeGeneratedPuzzles(batch, { allowedOperators, requestedCount: 30 });
+
+    // HARD guarantee from repeatHardCap=4: no equation repeats a number 4+ times.
+    expect(stats.repeatRisk.severeRate).toBe(0);
+    // Tiered soft cap makes triples rare — well under the pre-fix 0.20.
+    expect(stats.repeatRisk.excessiveRate).toBeLessThan(0.10);
+    // Operator balance must not have regressed below its established floor.
+    expect(stats.operatorBalance.score).toBeGreaterThan(0.30);
   }, 60_000);
 });

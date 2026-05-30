@@ -11,6 +11,8 @@
  *     allowedOperators:    string[]  // override (else derived from cfgList)
  *     candidatesPerCfg:    number    // default 3 (set 1 to disable planner)
  *     topConcentrationTarget: number // default 0.30
+ *     repeatHardCap:       number    // default 4 (reject N+ copies of one number)
+ *     repeatSoftCap:       number    // default 2 (prefer <= this many copies)
  *     weights:             object    // see DEFAULT_PLANNER_WEIGHTS
  *
  * Protocol (worker → main):
@@ -34,7 +36,7 @@
 import { generateBingo } from './bingoGenerator.js';
 import { initPopularityWeights } from './crossBingoPlacement.js';
 import { deriveAllowedOperatorsFromConfigs } from './diversityAnalysis.js';
-import { pickBestCandidate } from './generatorDiversityPlanner.js';
+import { pickBestCandidate, pickLeastRepetitiveCandidate } from './generatorDiversityPlanner.js';
 
 // Pre-load strip-freq.json once when worker boots.
 // If it fails, generator falls back to pure heatmap (still works, just different distribution).
@@ -95,12 +97,12 @@ self.onmessage = async (e) => {
       }
 
       // All K candidates failed the hard filter (e.g. they all emit a
-      // disallowed operator the cfg should have suppressed).  Round 2:
-      // try one more batch of K candidates; if STILL no acceptable
-      // candidate, fall back to candidates[0] so we don't loop
-      // forever on a permanently-broken cfg.  This is the same
-      // pragmatic compromise as buildDiversityBalancedBatch.
-      const fallback = candidates[0];
+      // disallowed operator the cfg should have suppressed, or every draw
+      // floods one number past the repeat hard cap).  Round 2: try one
+      // more batch of K candidates; if STILL no acceptable candidate, fall
+      // back to the LEAST repetitive draw so we don't loop forever on a
+      // permanently-broken cfg.  This is the same pragmatic compromise as
+      // buildDiversityBalancedBatch.
       const extras = [];
       while (extras.length < candidatesPerCfg) {
         try {
@@ -120,10 +122,13 @@ self.onmessage = async (e) => {
         break;
       }
 
-      // Both rounds hard-rejected — accept the first round's first
-      // candidate so the batch size stays correct.  This should be
-      // very rare and only happens when the cfg itself is
-      // inconsistent with the planner's allowedOperators.
+      // Both rounds hard-rejected — accept the least-repetitive draw across
+      // both rounds so the batch size stays correct.  This should be very
+      // rare and only happens when the cfg itself is inconsistent with the
+      // planner's allowedOperators (or genuinely cannot avoid a flooded
+      // number).  candidates[0] is the final safety net.
+      const fallback =
+        pickLeastRepetitiveCandidate([...candidates, ...extras]) ?? candidates[0];
       committedResults.push(fallback);
       self.postMessage({
         type: 'result',
